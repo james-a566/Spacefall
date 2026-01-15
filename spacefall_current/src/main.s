@@ -1,152 +1,153 @@
 ; ============================================================
-; main.s — based on NES boilerplate (ca65) — BG + Sprites
-; Spacefall/Starfall Shooter
-; NROM-128 (16KB PRG), 8KB CHR-ROM
+; main_.s — Starfall / Spacefall shooter (ca65)
+;
+;   1) Constants / Tiles / UI strings
+;   2) Memory (ZEROPAGE + BSS)
+;   3) Data tables (Palettes, LevelParams)
+;   4) RESET + MainLoop state machine
+;   5) NMI (vblank work: OAM DMA, BG text toggles, HUD, boss bar)
+;   6) Core systems: input, player, bullets, enemies, collisions, HUD, boss
+;   7) RNG + debug helpers
+;   8) VECTORS + CHR
+;
+; ============================================================
+;
+; ============================================================
+; RELEASE HARDENING / MAINTENANCE NOTES
+;
+; Quick checklist before you call a build “release”:
+;   [ ] DEBUG_DRAW_TEST disabled (0)
+;   [ ] debug_mode forced-off by default (0) and not set via input
+;   [ ] Any “test sprite” / “test spawn” code paths unreachable
+;   [ ] HUD + boss bar VRAM writes ONLY happen in NMI (vblank)
+;   [ ] All sprites outside visible use Y=$FE (no stray junk OAM)
+;   [ ] RNG is never all-zero (rng_hi|rng_lo != 0)
+;
+; Suggested convention going forward:
+;   - Put all tunable gameplay constants (speeds, cooldowns, timers) in one place.
+;   - Prefer named constants over magic numbers in logic-heavy routines.
+;   - Keep debug hooks fenced behind DEBUG_* flags or a single DEBUG define.
+; ============================================================
+
+; ============================================================
+; CONSTANTS + TILE MAP + UI LAYOUT
+; (Keep this section “dumb”: equates only, no code.)
+; ============================================================
+
+; ------------------------------------------------------------
+; NES hardware registers
+; ------------------------------------------------------------
+PPUCTRL   = $2000
+PPUMASK   = $2001
+PPUSTATUS = $2002
+OAMADDR   = $2003
+PPUSCROLL = $2005
+PPUADDR   = $2006
+PPUDATA   = $2007
+
+OAMDMA    = $4014
+JOY1      = $4016
+
+; ----------------------------
+; TUNABLES (game feel)
+; ----------------------------
+
+; Player movement (top-left of 16x16 ship)
+PLAYER_MOVE_SPD_X     = $02   ; px/frame
+PLAYER_MOVE_SPD_Y     = $02   ; px/frame
+PLAYER_MIN_X          = $08
+PLAYER_MAX_X          = $F0
+PLAYER_MIN_Y          = $10
+PLAYER_MAX_Y          = $D0
+
+; Bullets
+BULLET_SPD            = $05   ; px/frame upward
+BULLET_KILL_Y         = $08   ; kill once bullet Y < this (top safety)
+BULLET_SPAWN_Y_OFF    = $04   ; spawn at (player_y - off)
+
+; Firing
+FIRE_COOLDOWN_FR      = $06   ; frames between shots (lower = faster)
+GUN_RIGHT_X_OFF       = $0C   ; right muzzle offset from player_x
+
+INVULN_FRAMES = $30
+
+; Enemy spawning
+SPAWN_START_DELAY_FR   = $10   ; grace period before first enemy appears
+LEVEL_SPAWN_CD_FR      = $18   ; base frames between spawns for a level
+
+; Flash Screen
+FLASH_HIT_FR        = $08   ; quick pop on player hit
+FLASH_BOSS_START_FR = $12   ; longer / more dramatic
+FLASH_LEVEL_START_FR = $06
+FLASH_POWERUP_FR     = $04
+FLASH_GRAY_CUTOFF = $0C   ; timers >= this use grayscale
+
+; Boss
+BOSS_X_INIT         = $78
+BOSS_Y_INIT         = $30
+
+BOSS_HP_INIT        = $10    ; 16 HP
+BOSS_HIT_FLASH_FR   = $08
+BOSS_FIRE_CD_FR     = $20    ; ~32 frames between shots
+
+FLAG_SET            = $01
+FLAG_CLEAR          = $00
+
+; Boss HP bar (BG)
+BOSSBAR_NT_HI   = $20
+BOSSBAR_NT_LO   = $68   ; row 3, column $2068
+BOSSBAR_LEN     = $10   ; 16 tiles
+BOSSBAR_TILE    = $0A
+BOSSBAR_EMPTY   = $00   ; empty
+
+; Boss movement bounds (top-left position)
+BOSS_MIN_X = $08
+; right edge clamp = $F0 - (boss width - 8)
+; for 16px boss: $F0 - $08 = $E8
+BOSS_MAX_X = $E8
+
+BOSS_MIN_Y = $18
+BOSS_MAX_Y = $60
+
+BOSS_DX_INIT = $01   ; signed 8-bit: +1
+BOSS_DY_INIT = $01
+
+; Boss bullets
+BOSS_BULLET_MAX      = 4
+BOSS_BULLET_SPD      = $02     ; px/frame downward
+BOSS_BULLET_KILL_Y   = $E8     ; kill once bullet Y >= this
+BOSS_BULLET_SPAWN_Y  = $10     ; spawn at boss_y + this
+BOSS_BULLET_X_OFF    = $08     ; spawn near boss center (for 16px boss)
+BOSS_BULLET_Y_OFF    = $08
+BOSS_BULLET_TILE     = $05     ; TEMP: pick a visible tile you have
+BOSS_BULLET_ATTR     = $01     ; palette index (match ENEMY_ATTR if you want)
+
+BOSS_PAT_SINGLE   = $00
+BOSS_PAT_SPREAD3  = $01
+BOSS_PAT_AIMED3   = $02
+
+; ============================================================
+; TITLE / UI BG TILE STRINGS
+; (Used by WriteTitleBG / WritePressStartBG / WriteGameOverBG)
 ; ============================================================
 
 ; ----------------------------
-; HW REGS / CONSTANTS
-; ----------------------------
-PPUCTRL         = $2000
-PPUMASK         = $2001
-PPUSTATUS       = $2002
-OAMADDR         = $2003
-PPUSCROLL       = $2005
-PPUADDR         = $2006
-PPUDATA         = $2007
-OAMDMA          = $4014
-JOY1            = $4016
-
-BTN_A           = %10000000
-BTN_B           = %01000000
-BTN_SELECT      = %00100000
-BTN_START       = %00010000
-BTN_UP          = %00001000
-BTN_DOWN        = %00000100
-BTN_LEFT        = %00000010
-BTN_RIGHT       = %00000001
-
-ENEMY_ATTR      = $01      ; sprite palette 1 or $00 for palette 0
-ENEMY_SPAWN_Y   = $10
-ENEMY_KILL_Y    = $E0
-ENEMY_SPD       = $02
-ENEMY_SPAWN_CD  = $20      ; spawn every 32 frames (tweak)
-
-; ============================================================
-; ENEMY TYPES
-; ============================================================
-EN_A = $00        ; 1x1 (8x8)
-EN_B = $01        ; 1x1 (8x8)
-EN_C = $02        ; 2x2 (16x16)
-EN_D = $03        ; 2x2 (16x16)
-EN_E = $04        ; 2x2 (16x16)  
-
-; ============================================================
-; ENEMY TILES (match your CHR exactly)
-; ============================================================
-
-; --- Enemy A (8x8) ---
-ENEMY_A_TILE_SOLID  = $06
-ENEMY_A_TILE_ACCENT = $07   ; 2-tone variant
-
-; --- Enemy B (8x8) ---
-ENEMY_B_TILE_SOLID  = $08
-ENEMY_B_TILE_ACCENT = $09   ; 2-tone variant
-
-; Choose which variant is currently "active"
-; (Use SOLID now; swap to ACCENT later for tuning)
-ENEMY_A_TILE = ENEMY_A_TILE_SOLID
-ENEMY_B_TILE = ENEMY_B_TILE_SOLID
-
-
-; ============================================================
-; 2x2 META ENEMIES (VISIBLE PLACEHOLDERS)
-; Use existing A/B tiles + accent variants so you can see them now.
-; Each meta uses 4 tiles: TL, TR, BL, BR
-; ============================================================
-
-; C = solid block (uses 0A/0B/0C/0D)
-ENEMY_C_TL = $0A
-ENEMY_C_TR = $0B
-ENEMY_C_BL = $0C
-ENEMY_C_BR = $0D
-
-; D = stripes + X (uses 0E/0F and reuse 0E/0F)
-ENEMY_D_TL = $0E
-ENEMY_D_TR = $0F
-ENEMY_D_BL = $0E
-ENEMY_D_BR = $0F
-
-; E = mixed (reuse 0A/0D/0C/0F)
-ENEMY_E_TL = $0A
-ENEMY_E_TR = $0D
-ENEMY_E_BL = $0C
-ENEMY_E_BR = $0F
-
-HEART_TILE = $28
-
-
-DEBUG_DRAW_TEST = 0   ; set to 0 to disable
-
-
-THR_B = $60     ; ~37% B (96/256). Tweak later.
-
-THR_E = $F0    ; TEMP: top ~6% of rolls become E (16/256)
-
-; Score 
-DIGIT_TILE_BASE = $10
-
-SCORE_OAM   = $EC    ; sprite #59 = 59*4 = $EC
-SCORE_Y     = $08
-SCORE_X0    = $08
-SCORE_ATTR  = $00   ; palette 0
-
-; Game Over
-GAMEOVER_OAM  = $A0   ; sprite 40 * 4
-GAMEOVER_Y    = $70
-GAMEOVER_X0   = $48
-GAMEOVER_ATTR = $00   ; palette 0 (white letters)
-
-BOSS_OAM = $60   ; sprite #24 (24*4)
-
-; --- Letter tile IDs  ---
-LETTER_TILE_BASE = $1A
-
-TILE_G = $1A
-TILE_A = $1B
-TILE_M = $1C
-TILE_E = $1D
-TILE_O = $1E
-TILE_V = $1F
-TILE_R = $20
-TILE_P = $21
-TILE_S = $24
-TILE_T = $26
-TILE_L = $27
-TILE_F = $22   
-
-TILE_H = $29
-TILE_I = $2A
-TILE_C = $2B
-
-; ----------------------------
-; TITLE "STARFALL" as BG tiles
+; "STARFALL" title line
 ; ----------------------------
 TITLE_NT_HI  = $21
 TITLE_NT_LO  = $8C    ; row 12, col 12  => $218C
-
 TITLE_LEN    = 8
 
 TitleStarfallTiles:
   .byte TILE_S, TILE_T, TILE_A, TILE_R, TILE_F, TILE_A, TILE_L, TILE_L
 
+
 ; ----------------------------
-; PRESS START as BG tiles
+; "PRESS START" prompt
 ; ----------------------------
 PRESS_NT_HI  = $22
 PRESS_NT_LO  = $4B    ; row 18, col 11  => $224B
-
-PRESS_NT_LEN = 11          ; "PRESS"(5) + space(1) + "START"(5)
+PRESS_NT_LEN = 11     ; "PRESS"(5) + space(1) + "START"(5)
 
 PressStartTiles:
   .byte TILE_P, TILE_R, TILE_E, TILE_S, TILE_S
@@ -154,13 +155,8 @@ PressStartTiles:
   .byte TILE_S, TILE_T, TILE_A, TILE_R, TILE_T
 
 
-BANNER_OAM   = $80    ; sprite #32 * 4
-BANNER_Y     = $58    ; slightly above center
-BANNER_X0    = $64    ; centered-ish for 7 chars (56px wide)
-BANNER_ATTR  = $00
-
 ; ----------------------------
-; GAME OVER as BG tiles
+; "GAME OVER"
 ; ----------------------------
 GAMEOVER_NT_HI = $21
 GAMEOVER_NT_LO = $CB        ; row 14, col 11  => $21CB
@@ -171,45 +167,214 @@ GameOverTiles:
   .byte $00                ; space (blank tile)
   .byte TILE_O, TILE_V, TILE_E, TILE_R
 
-HUD_NT_HI      = $20
 
+; ------------------------------------------------------------
+; Star tile variants (CHR tiles $2C–$2F)
+; ------------------------------------------------------------
+STAR_T0 = $2C    ; tiny dot
+STAR_T1 = $2D    ; plus star
+STAR_T2 = $2E    ; diamond star
+STAR_T3 = $2F    ; bright cross (rare)
+
+; ------------------------------------------------------------
+; Controller bits (pad1 / pad1_new)
+; ------------------------------------------------------------
+BTN_A      = %10000000
+BTN_B      = %01000000
+BTN_SELECT = %00100000
+BTN_START  = %00010000
+BTN_UP     = %00001000
+BTN_DOWN   = %00000100
+BTN_LEFT   = %00000010
+BTN_RIGHT  = %00000001
+
+; ------------------------------------------------------------
+; PPU / rendering presets
+; ------------------------------------------------------------
+; PPUMASK preset (BG+SPR enabled, show left 8px)
+PPUMASK_BG_SPR = %00011110
+
+; OAM shadow buffer (RAM page aligned for DMA)
+OAM_BUF = $0200
+
+; ------------------------------------------------------------
+; Enemy system (generic)
+; ------------------------------------------------------------
+ENEMY_ATTR      = $01      ; sprite palette index
+ENEMY_SPAWN_Y   = $10
+ENEMY_KILL_Y    = $E0
+
+; ------------------------------------------------------------
+; Enemy types
+; (A/B are 8x8. C/D/E are 16x16 (2x2 metas).)
+; ------------------------------------------------------------
+EN_A = $00        ; 1x1 (8x8)
+EN_B = $01        ; 1x1 (8x8)
+EN_C = $02        ; 2x2 (16x16)
+EN_D = $03        ; 2x2 (16x16)
+EN_E = $04        ; 2x2 (16x16)
+
+; --- A/B tiles (single-tile enemies) ---
+ENEMY_A_TILE_SOLID  = $06
+ENEMY_A_TILE_ACCENT = $07   ; 2-tone variant
+ENEMY_B_TILE_SOLID  = $08
+ENEMY_B_TILE_ACCENT = $09   ; 2-tone variant
+
+; Choose which single tile to actually use (swap to ACCENT if desired)
+ENEMY_A_TILE = ENEMY_A_TILE_SOLID
+ENEMY_B_TILE = ENEMY_B_TILE_SOLID
+
+; --- C/D/E tiles (2x2 metas) ---
+; NOTE: these are tile IDs, not sprite slots.
+ENEMY_C_TL = $0A
+ENEMY_C_TR = $0B
+ENEMY_C_BL = $0C
+ENEMY_C_BR = $0D
+
+ENEMY_D_TL = $0E
+ENEMY_D_TR = $0F
+ENEMY_D_BL = $0E
+ENEMY_D_BR = $0F
+
+ENEMY_E_TL = $0A
+ENEMY_E_TR = $0D
+ENEMY_E_BL = $0C
+ENEMY_E_BR = $0F
+
+; ------------------------------------------------------------
+; RNG thresholds for enemy mix (tweak later)
+; ------------------------------------------------------------
+THR_B = $60     ; ~37% B (96/256)
+THR_E = $F0     ; TEMP: top ~6% become E (16/256)
+
+; ------------------------------------------------------------
+; HUD / text tile IDs
+; ------------------------------------------------------------
+DIGIT_TILE_BASE  = $10     ; 0..9 => $10..$19
+LETTER_TILE_BASE = $1A     ; project-specific font mapping
+
+; Letter tiles you currently use explicitly:
+TILE_G = $1A
+TILE_A = $1B
+TILE_M = $1C
+TILE_E = $1D
+TILE_O = $1E
+TILE_V = $1F
+TILE_R = $20
+TILE_P = $21
+TILE_F = $22
+TILE_S = $24
+TILE_T = $26
+TILE_L = $27
+TILE_H = $29
+TILE_I = $2A
+TILE_C = $2B
+
+HEART_TILE = $28
+
+; ------------------------------------------------------------
+; HUD (BG nametable layout)
+; ------------------------------------------------------------
+HUD_NT_HI      = $20
 HUD_HI_LO      = $22   ; row 1 col 2  ($2022)
 HUD_HI_DIG_LO  = $25   ; row 1 col 5  ($2025)
-
-HUD_SC_LO     = $42   ; row 2 col 2  ($2042) -> "SC "
-HUD_SC_DIG_LO = $45   ; row 2 col 5  ($2045) -> digits start
-
+HUD_SC_LO      = $42   ; row 2 col 2  ($2042) -> "SC "
+HUD_SC_DIG_LO  = $45   ; row 2 col 5  ($2045) -> digits start
 HUD_LIVES_LO   = $2C   ; row 1 col 12 ($202C)
 
-BOSS_ATTR      = $02          ; sprite palette 2 (change if you want)
-BOSS_W         = 16
-BOSS_H         = 16
+HUD_MAX_LIVES = 10      ; 
 
+; ------------------------------------------------------------
+; Sprite text overlays (score + game over + banner)
+; ------------------------------------------------------------
+SCORE_OAM   = $EC    ; sprite #59 = 59*4
+SCORE_Y     = $08
+SCORE_X0    = $08
+SCORE_ATTR  = $00
+
+GAMEOVER_OAM  = $A0   ; sprite #40 * 4
+GAMEOVER_Y    = $70
+GAMEOVER_X0   = $48
+GAMEOVER_ATTR = $00
+
+BANNER_OAM   = $80    ; sprite #32 * 4
+BANNER_Y     = $58
+BANNER_X0    = $64    ; centered-ish for 7 chars (56px wide)
+BANNER_ATTR  = $00
+
+
+; ------------------------------------------------------------
+; Boss
+; ------------------------------------------------------------
+BOSS_OAM  = $60          ; sprite #24 (24*4)
+BOSS_ATTR = $02          ; sprite palette 2
+
+BOSS_W = $10
+BOSS_H = $10
+
+; boss metasprite tiles (2x2)
 BOSS_TL = $0E
 BOSS_TR = $0F
 BOSS_BL = $0E
 BOSS_BR = $0F
 
-BOSSBAR_NT_HI = $20
-BOSSBAR_NT_LO = $62      ; adjust if you want
-BOSSBAR_LEN   = 16
-BOSSBAR_TILE  = $0A      ; your solid debug tile
+; STAR_TILE = $0A
 
-BOSS_HP_NT_HI = $20
-BOSS_HP_NT_LO = $44      ; row 2 col 4-ish (just an example)
-BOSS_HP_LEN   = 8
-
-
-
-
-; PPUMASK presets (includes “show left 8px” bits)
-PPUMASK_BG_SPR = %00011110
-
-OAM_BUF = $0200
+; Game States
+STATE_BANNER = $00
+STATE_PLAY   = $01
+STATE_BOSS   = $02
+STATE_OVER   = $03
+STATE_TITLE  = $04
+STATE_PAUSE = $05   ; pick an unused value
 
 ; ----------------------------
-; iNES HEADER
+; Catch object (Core Block)
 ; ----------------------------
+CATCH_SPAWN_Y      = $10
+CATCH_KILL_Y       = $E8        ; off bottom
+CATCH_SPD          = $01        ; pixels per frame
+CATCH_SPAWN_MIN    = 90         ; frames
+CATCH_SPAWN_VAR    = 90         ; +0..89 => 90..179
+
+CATCH_TILE_CORE    = $30        ; new tile index
+CATCH_ATTR         = $02        ; use sprite palette 1
+
+; If player is 16x16 metasprite:
+PLAYER_W = 16
+PLAYER_H = 16
+
+; Catch is 8x8 tile:
+CATCH_W  = 8
+CATCH_H  = 8
+
+CATCH_OAM_BASE = $A0   ; sprite #40
+CATCH_MAX      = 4     ; 
+
+
+JAM_FR = 60        ; 1 second at 60fps (tweak)
+
+; ----------------------------
+; TUNING DEFAULTS (fallbacks)
+; ----------------------------
+ENEMY_SPAWN_BASE   = 36      ; frames
+CATCH_SPAWN_BASE   = 300     ; frames
+JAM_FRAMES_BASE    = 60      ; frames (pick 60 to start)
+CATCH_LIFE_BASE    = 240     ; frames (~4 seconds at 60fps)
+
+
+; ------------------------------------------------------------
+; Debug toggles (compile-time)
+; ------------------------------------------------------------
+DEBUG_DRAW_TEST = 0      ; set to 0 to disable
+
+DEBUG_BOSS_SKIP = 1     ; set to 0 to compile out boss-skip hotkey
+BTN_SELECT_START = (BTN_SELECT | BTN_START)
+
+; ----------------------------
+; iNES header
+; ----------------------------
+
 .segment "HEADER"
   .byte "NES", $1A   ; Bytes 0-3 Constant Bytes/idenitifies file as iNES format NES ROM image
   .byte $01          ; Byte 4: PRG ROM size / 1 × 16KB PRG
@@ -244,6 +409,16 @@ OAM_BUF = $0200
 ; ZEROPAGE
 ; ----------------------------
 .segment "ZEROPAGE"
+; ------------------------------------------------------------
+; ZEROPAGE (fast access)
+; Keep frequently-touched state here: frame sync, input, UI flags, scratch.
+; ------------------------------------------------------------
+title_inited:         .res 1
+
+paused_prev_state: .res 1   ; stores what you paused from (usually PLAY)
+pause_inited:      .res 1   ; one-time draw for overlay (optional)
+
+; ---- Frame sync / input ----
 nmi_ready:            .res 1
 frame_lo:             .res 1
 frame_hi:             .res 1
@@ -251,6 +426,8 @@ pad1:                 .res 1
 pad1_prev:            .res 1
 pad1_new:             .res 1
 
+
+; ---- Title / UI state (BG toggles) ----
 first_run:            .res 1   ; 0 = not started yet, 1 = started
 press_visible:        .res 1   ; 0=hidden, 1=shown (BG)
 title_visible:        .res 1   ; 0=hidden, 1=shown (BG)
@@ -261,23 +438,59 @@ screen_flash_timer:   .res 1   ; 0=off, >0 flash running
 boss_hp_clear_pending: .res 1   ; 0=no, 1=yes
 
 draw_test_active:     .res 1   ; 1 = freeze enemies and show test set
+
+; ---- One-shot / debug flow flags ----
 draw_test_done:       .res 1   ; 1 = already spawned once this run
 
-tmp:                  .res 1
-tmp0:                 .res 1
-tmp1:                 .res 1
-tmp2:                 .res 1
-tmp3:                 .res 1
-tmp4:                 .res 1
 
+; ---- Scratch (temps) ----
+; NOTE: These are shared across routines. Avoid relying on them across JSR boundaries
+; unless you document it locally. When adding new code, prefer tmp3/tmp4 last so you
+; don’t accidentally clobber something older.
+tmp:                  .res 1      ; general-purpose scratch (A/B temp)
+tmp0:                 .res 1     ; scratch: often loop counter / retry counter
+tmp1:                 .res 1     ; scratch: often X/Y working value
+tmp2:                 .res 1     ; scratch: often speed/threshold in collisions
+tmp3:                 .res 1     ; scratch: spare
+tmp4:                 .res 1     ; scratch: spare
+
+
+; ---- Debug controls ----
 debug_force_type: .res 1   ; $FF = off, otherwise EN_A..EN_E
 debug_mode: .res 1   ; 0=normal, 1=A, 2=B, 3=C, 4=D, 5=E
+
+; ---- enemy spawns ----
+spawn_cd:         .res 1
+level_enemy_cd:   .res 1
+
+; ---- catch spawns ----
+catch_cd:         .res 1
+level_catch_cd:   .res 1
+
+; ---- jam + catch lifetime ----
+jam_timer:        .res 1
+level_jam_frames: .res 1
+
+catch_life_timer: .res 1
+level_catch_life: .res 1
+catch_active:     .res 1   ; 0/1 (or reuse your actor alive flag)
+
 
 ; ----------------------------
 ; BSS
 ; ----------------------------
 .segment "BSS"
+; ------------------------------------------------------------
+; BSS (RAM)
+; Arrays and longer-lived state live here.
+; ------------------------------------------------------------
+
+; ---- Gameplay core state ----
+
+; ---- Game state machine ----
 game_state:       .res 1
+
+; ---- Player ----
 player_x:         .res 1
 player_y:         .res 1
 player_cd:        .res 1    ; fire cooldown
@@ -288,7 +501,6 @@ bul_x:            .res BULLET_MAX
 bul_y:            .res BULLET_MAX
 bul_y_prev:       .res BULLET_MAX
 
-scroll_y:         .res 1
 gun_side:         .res 1     ; 0 = left gun next, 1 = right gun next
 rng_lo:           .res 1
 rng_hi:           .res 1
@@ -311,10 +523,13 @@ score_d4:         .res 1   ; ones
 score_x_cur: .res 1
 tmp_xcur: .res 1
 
-spawn_cd:     .res 1
+
+; ---- Spawning ----
 
 ; enemies (N slots)
-ENEMY_MAX = 5
+ENEMY_MAX = 5    ; number of concurrent enemy slots (arrays below)
+
+; ---- Enemies (slot arrays) ----
 ene_alive:   .res ENEMY_MAX
 ene_x:       .res ENEMY_MAX
 ene_y:       .res ENEMY_MAX
@@ -331,6 +546,20 @@ ene_dx:      .res ENEMY_MAX   ; optional horizontal drift (-2..+2 stored as sign
 ene_hp:      .res ENEMY_MAX   ; if you add tougher enemies
 ene_timer:   .res ENEMY_MAX   ; per-enemy timer (wiggle, animation, firing)
 ene_score:   .res ENEMY_MAX   ; if different enemies give different points (or derive from type)
+
+; ----------------------------
+; Catch object state
+; ----------------------------
+catch_spawn_cd: .res 1
+
+; --- catch objects ---
+catch_alive: .res CATCH_MAX
+catch_x:     .res CATCH_MAX
+catch_y:     .res CATCH_MAX
+catch_type:  .res CATCH_MAX   ; if you have it
+catch_tile:  .res CATCH_MAX   ; <-- NEW: tile id per catch object
+catch_attr:  .res CATCH_MAX   ; <-- optional: per-object palette/flip
+
 
 ; Level control vars
 level_idx:       .res 1
@@ -350,6 +579,8 @@ boss_timer_hi:   .res 1
 level_banner:    .res 1    ; frames remaining to show "LEVEL X"
 
 ; Boss
+
+; ---- Boss ----
 boss_alive:      .res 1
 boss_x:          .res 1
 boss_y:          .res 1
@@ -359,13 +590,25 @@ boss_hp_dirty:   .res 1
 boss_flash:      .res 1        ; frames remaining for hit flash
 boss_fire_cd:    .res 1        ; cooldown to shoot
 
-; Game States
-STATE_BANNER = $00
-STATE_PLAY   = $01
-STATE_BOSS   = $02
-STATE_OVER   = $03
-STATE_TITLE  = $04
+boss_dx: .res 1
+boss_dy:  .res 1
 
+; Boss bullets (slot arrays)
+bossbul_alive:   .res BOSS_BULLET_MAX
+bossbul_x:       .res BOSS_BULLET_MAX
+bossbul_y:       .res BOSS_BULLET_MAX
+bossbul_y_prev:  .res BOSS_BULLET_MAX
+
+bossbul_dx:  .res BOSS_BULLET_MAX   ; signed
+bossbul_dy:  .res BOSS_BULLET_MAX   ; unsigned (or signed later)
+
+boss_pattern: .res 1
+
+
+
+
+
+; ---- HUD (BG tiles) ----
 hud_dirty:      .res 1   ; 1 = update HUD in NMI
 
 hi_d0:          .res 1
@@ -374,6 +617,15 @@ hi_d2:          .res 1
 hi_d3:          .res 1
 hi_d4:          .res 1
 
+; Catch objects
+gun_jam_timer: .res 1
+
+; Level control vars (add these if you plan to use them)
+level_catch_good_thr: .res 1
+level_catch_cap:      .res 1
+enemy_cd:             .res 1   
+
+level_catch_cd4:      .res 1
 ; ----------------------------
 ; CODE
 ; ----------------------------
@@ -384,7 +636,7 @@ hi_d4:          .res 1
 ; ----------------------------
 Palettes:
 ; BG0 Palettes
-  .byte $0F,$30,$30,$30       ; p0
+  .byte $0F, $01, $21, $30   ; BG p0: black, dark blue, light blue, white
   .byte $0F,$06,$16,$26       ; p1
   .byte $0F,$09,$19,$29       ; p2
   .byte $0F,$0C,$1C,$2C       ; p3
@@ -395,68 +647,326 @@ Palettes:
 
   .byte $0F,$01,$21,$30       ; p0 option A (Player Ship)
   .byte $0F,$16,$30,$30       ; p1 enemy palette
-  .byte $0F,$26,$30,$30       ; p2
+; SPR palette 2 – Catch objects
+.byte $0F, $01, $21, $30
   .byte $0F,$09,$19,$29       ; p3
 
-LEVEL_STRIDE = 8
+LEVEL_STRIDE = 12
+
+; ============================================================
+; LEVEL PARAMS — HOW TO READ / TUNE THESE VALUES
+; ============================================================
+;
+; This table defines per-level difficulty “knobs”.
+; Each row is 12 bytes (LEVEL_STRIDE = 12).
+;
+; ------------------------------------------------------------
+; GENERAL TIMING NOTES
+; ------------------------------------------------------------
+; - Game runs at 60 FPS.
+; - 1 second = 60 frames.
+; - catch_cd4 is multiplied by 4 in the loader:
+;       catch_cd = catch_cd4 * 4
+;
+; ------------------------------------------------------------
+; FIELD BREAKDOWN (by index)
+; ------------------------------------------------------------
+;
+; [0] LP_SPAWN_CD  (enemy spawn cooldown, FRAMES)
+;     - Smaller = enemies spawn more frequently.
+;     - Interpreted directly as frames.
+;     - Example:
+;         spawn_cd = 30  -> 30 frames  -> 0.5 seconds
+;         spawn_cd = 60  -> 60 frames  -> 1.0 second
+;
+; [1] LP_ENEMY_SPD (enemy fall speed)
+;     - Added to Y position each frame.
+;     - Larger = enemies fall faster.
+;     - This is a per-frame pixel delta (not scaled).
+;
+; [2–5] LP_THR_B / C / D / E  (enemy type selection thresholds)
+;     - Used with an 8-bit RNG roll r = 0..255.
+;     - Selection logic:
+;         if r < thrB              -> type B
+;         else if r < thrC         -> type C
+;         else if r < thrD         -> type D
+;         else if thrE != 0
+;              and r >= thrE       -> type E
+;         else                     -> type A
+;
+;     - Thresholds must be ascending.
+;     - Percent chance ≈ (band size) / 256.
+;
+; [6–7] LP_BOSS_TIME_LO / HI  (boss timer start)
+;     - 16-bit value, in FRAMES.
+;     - Example:
+;         7200 frames  -> 120 seconds -> 2:00
+;         9000 frames  -> 150 seconds -> 2:30
+;
+; [8] LP_ENE_CD  (enemy internal cooldown)
+;     - Used by enemy AI for actions/firing.
+;     - Smaller = more frequent behavior.
+;     - Units are frames (implementation-specific).
+;
+; [9] LP_CATCH_CD4  (catch spawn attempt interval)
+;     - Stored in units of 4 frames.
+;     - Loader does:
+;         catch_cd = max(catch_cd4,1) * 4
+;
+;     - Attempt interval (seconds):
+;         seconds ≈ catch_cd4 / 15
+;
+;     - Examples:
+;         catch_cd4 = 15  -> 1.0 sec per attempt
+;         catch_cd4 = 30  -> 2.0 sec per attempt
+;         catch_cd4 = 36  -> 2.4 sec per attempt
+;         catch_cd4 = 75  -> 5.0 sec per attempt
+;
+; [10] LP_GOOD_THR  (catch spawn probability threshold)
+;     - On each spawn attempt:
+;         r = random 0..255
+;         spawn if r < good_thr
+;
+;     - Probability per attempt:
+;         P(spawn) = good_thr / 256
+;
+;     - Examples:
+;         good_thr = 0    -> 0%   (never spawns)
+;         good_thr = 32   -> 12.5%
+;         good_thr = 60   -> 23.4%
+;         good_thr = 128  -> 50%
+;         good_thr = 255  -> ~99.6%
+;
+;     - Expected time between spawns:
+;         ≈ (attempt interval) / (good_thr / 256)
+;
+;     - Example:
+;         catch_cd4 = 36  (2.4s attempts)
+;         good_thr  = 60  (23.4%)
+;         → ~1 spawn every ~10 seconds (on average)
+;
+; [11] LP_CATCH_CAP  (max active catch objects)
+;     - Maximum number of catch objects allowed
+;       on screen at once.
+;     - Typical values:
+;         3 = generous
+;         2 = moderate
+;         1 = rare / high tension
+;     - Must not exceed CATCH_MAX.
+;
+; ------------------------------------------------------------
+; TUNING INTUITION
+; ------------------------------------------------------------
+; - To make catch objects rarer:
+;       ↑ catch_cd4   (fewer attempts)
+;       ↓ good_thr    (lower chance per attempt)
+;       ↓ catch_cap  (fewer allowed simultaneously)
+;
+; - To make them more generous:
+;       ↓ catch_cd4
+;       ↑ good_thr
+;       ↑ catch_cap
+;
+; - good_thr controls *probability*
+; - catch_cd4 controls *time*
+; - catch_cap controls *screen pressure*
+;
+; ============================================================
+
+; ------------------------------------------------------------
+; CATCH MATH QUICK REF (with current logic)
+;   attempt interval (sec) = catch_cd4 / 15
+;   P(spawn per attempt)   = good_thr / 256
+;   expected sec/spawn     = (catch_cd4/15) / (good_thr/256)
+;                          = catch_cd4 * 256 / (15*good_thr)
+;
+; With good_thr = 60:
+;   P = 23.4%
+;   expected sec/spawn ≈ catch_cd4 * 0.284
+; ------------------------------------------------------------
+
+; ------------------------------------------------------------
+; ENEMY TYPE THRESHOLDS — HOW TO READ %
+; ------------------------------------------------------------
+; r = random byte 0..255 (256 total values)
+;
+; Selection:
+;   if r < thrB              -> B
+;   else if r < thrC         -> C
+;   else if r < thrD         -> D
+;   else if thrE != 0
+;        and r >= thrE       -> E
+;   else                     -> A
+;
+; Band sizes:
+;   B_count = thrB
+;   C_count = thrC - thrB
+;   D_count = thrD - thrC
+;
+;   If thrE != 0:
+;     E_count = 256 - thrE
+;     A_count = thrE - thrD
+;   Else (thrE == 0):
+;     E_count = 0
+;     A_count = 256 - thrD
+;
+; Percent chance ≈ (count / 256) * 100
+;
+; Quick intuition:
+;   16  ≈ 6.25%
+;   32  ≈ 12.5%
+;   64  ≈ 25%
+;   128 ≈ 50%
+;
+; Example:
+;   thrB=$28 (40) -> B ≈ 15.6%
+;   thrC=$48 (72) -> C ≈ 12.5%
+;   thrD=$58 (88) -> D ≈ 6.25%
+;   thrE=$00      -> A ≈ 65.6%
+; ------------------------------------------------------------
+
+
+; ----- Macro: one row = one level -----
+; boss_frames is a 16-bit value (in FRAMES).
+.macro LEVELPARAMS spawn, spd, thrB, thrC, thrD, thrE, boss_frames, ene_cd, catch_cd4, good_thr, cap
+  .byte spawn, spd, thrB, thrC, thrD, thrE, <(boss_frames), >(boss_frames), ene_cd, catch_cd4, good_thr, cap
+.endmacro
+
+; Notes:
+; - thrE = $00 disables E entirely
+; - boss_time is frames @60fps
+
+; ============================================================
+; % NOTES FOR THIS LEVELPARAMS TABLE
+; ============================================================
+; Catch:
+;   attempt every (catch_cd4*4) frames  = catch_cd4/15 seconds
+;   spawn chance per attempt = good_thr / 256
+;   expected avg time between spawns (no cap/slots) ≈ attempt_seconds / (good_thr/256)
+;
+; Enemy type mix from thresholds (r=0..255):
+;   B = thrB
+;   C = thrC - thrB
+;   D = thrD - thrC
+;   if thrE=0:  A = 256 - thrD, E=0
+;   if thrE!=0: A = thrE - thrD, E = 256 - thrE
+;   Percent = count/256
+; ============================================================
 
 LevelParams:
-; spawn, spd, thrB, thrC, thrD, thrE, boss_lo, boss_hi
-;
-; Notes:
-; - thrE = $00 disables E entirely (recommended until you want it)
-; - durations below are “boss_time” in frames @ 60fps (hex shown as lo,hi)
 
-  ; L1: ~95% A, ~5% B. Very slow, roomy.
-  .byte $24,  $01, $0C, $0C, $0C, $00,  $10, $1C   ; 2:00  (7200 = $1C10)
+; L1
+; Catch: cd4=24 => 96f => 1.60s/attempt
+;       good_thr=96 => 37.50% per attempt
+;       expected ≈ 4.27s per successful spawn (ignoring cap/slots), cap=3
+; Enemy mix (thrB=$0C thrC=$0C thrD=$0C thrE=$00):
+;   A=95.31%  B=4.69%  C=0%  D=0%  E=0%
+LEVELPARAMS $24, $01, $0C, $0C, $0C, $00, 7200,  36,  24, 96, 3
 
-  ; L2: ~75% A, ~25% B. Still slow.
-  .byte $20,  $01, $40, $40, $40, $00,  $10, $1C   ; 2:00
+; L2
+; Catch: cd4=26 => 104f => 1.73s/attempt
+;       good_thr=88 => 34.38%
+;       expected ≈ 5.04s, cap=3
+; Enemy mix (thrB=$40 thrC=$40 thrD=$40 thrE=$00):
+;   A=75.00%  B=25.00%  C=0%  D=0%  E=0%
+LEVELPARAMS $20, $01, $40, $40, $40, $00, 7200,  36,  26, 88, 3
 
-  ; L3: ~65% A, ~35% B. Slightly quicker spawns.
-  .byte $1C,  $02, $5A, $5A, $5A, $00,  $28, $23   ; 2:30  (9000 = $2328)
+; L3
+; Catch: cd4=28 => 112f => 1.87s/attempt
+;       good_thr=80 => 31.25%
+;       expected ≈ 5.97s, cap=3
+; Enemy mix (thrB=$5A thrC=$5A thrD=$5A thrE=$00):
+;   A=64.84%  B=35.16%  C=0%  D=0%  E=0%
+LEVELPARAMS $1C, $02, $5A, $5A, $5A, $00, 9000,  32,  28, 80, 3
 
-  ; L4: Introduce C as rare (~6%). A/B still dominant.
-  ; B: 40% (0..63), C: ~6% (64..79), D: 0
-  .byte $1A,  $02, $40, $50, $50, $00,  $28, $23   ; 2:30
+; L4
+; Catch: cd4=30 => 120f => 2.00s/attempt
+;       good_thr=72 => 28.13%
+;       expected ≈ 7.11s, cap=2
+; Enemy mix (thrB=$66 thrC=$76 thrD=$76 thrE=$00):
+;   A=53.91%  B=39.84%  C=6.25%  D=0%  E=0%
+LEVELPARAMS $1A, $02, $66, $76, $76, $00, 9000,  32,  30, 72, 2
 
-  ; L5: More C (~12%). Faster feel, still manageable.
-  ; B: 35% (0..59), C: ~12% (60..79)
-  .byte $18,  $02, $3C, $50, $50, $00,  $30, $2A   ; 3:00  (10800 = $2A30)
+; L5
+; Catch: cd4=32 => 128f => 2.13s/attempt
+;       good_thr=64 => 25.00%
+;       expected ≈ 8.53s, cap=2
+; Enemy mix (thrB=$3C thrC=$50 thrD=$50 thrE=$00):
+;   A=68.75%  B=23.44%  C=7.81%  D=0%  E=0%
+LEVELPARAMS $18, $02, $3C, $50, $50, $00, 10800, 28,  32, 64, 2
 
-  ; L6: C becomes a real player. (B 30%, C 20%)
-  ; B: 30% (0..47), C: 20% (48..79)
-  .byte $16,  $03, $30, $50, $50, $00,  $30, $2A   ; 3:00
+; L6
+; Catch: cd4=34 => 136f => 2.27s/attempt
+;       good_thr=56 => 21.88%
+;       expected ≈ 10.36s, cap=2
+; Enemy mix (thrB=$30 thrC=$50 thrD=$50 thrE=$00):
+;   A=68.75%  B=18.75%  C=12.50%  D=0%  E=0%
+LEVELPARAMS $16, $03, $30, $50, $50, $00, 10800, 28,  34, 56, 2
 
-  ; L7: Introduce D as rare (~6%).
-  ; B: 25% (0..39), C: 20% (40..71), D: ~6% (72..87)
-  .byte $14,  $03, $28, $48, $58, $00,  $38, $31   ; 3:30  (12600 = $3138)
+; L7
+; Catch: cd4=36 => 144f => 2.40s/attempt
+;       good_thr=48 => 18.75%
+;       expected ≈ 12.80s, cap=2
+; Enemy mix (thrB=$28 thrC=$48 thrD=$58 thrE=$00):
+;   A=65.63%  B=15.63%  C=12.50%  D=6.25%  E=0%
+LEVELPARAMS $14, $03, $28, $48, $58, $00, 12600, 24,  36, 48, 2
 
-  ; L8: More D (~10%). This is where it starts feeling spicy.
-  ; B: 25% (0..39), C: 15% (40..63), D: 10% (64..79)
-  .byte $12,  $03, $28, $40, $50, $00,  $38, $31   ; 3:30
+; L8
+; Catch: cd4=38 => 152f => 2.53s/attempt
+;       good_thr=44 => 17.19%
+;       expected ≈ 14.74s, cap=2
+; Enemy mix (thrB=$28 thrC=$40 thrD=$50 thrE=$00):
+;   A=68.75%  B=15.63%  C=9.38%  D=6.25%  E=0%
+LEVELPARAMS $12, $03, $28, $40, $50, $00, 12600, 24,  38, 44, 2
 
-  ; L9: Faster + more D.
-  ; B: 20% (0..31), C: 15% (32..55), D: 15% (56..79)
-  .byte $10,  $04, $20, $38, $50, $00,  $40, $38   ; 4:00  (14400 = $3840)
+; L9
+; Catch: cd4=40 => 160f => 2.67s/attempt
+;       good_thr=40 => 15.63%
+;       expected ≈ 17.07s, cap=2
+; Enemy mix (thrB=$20 thrC=$38 thrD=$50 thrE=$00):
+;   A=68.75%  B=12.50%  C=9.38%  D=9.38%  E=0%
+LEVELPARAMS $10, $04, $20, $38, $50, $00, 14400, 20,  40, 40, 2
 
-  ; L10: Introduce E as rare (~5%) at the top end.
-  ; E: 5% (243..255) because thrE=$F3
-  ; B: 18.75% (0..47), C: 12.5% (48..79), D: 12.5% (80..111)
-  .byte $0F,  $04, $30, $50, $70, $F3,  $48, $3F   ; 4:30  (16200 = $3F48)
+; L10
+; Catch: cd4=44 => 176f => 2.93s/attempt
+;       good_thr=36 => 14.06%
+;       expected ≈ 20.87s, cap=1
+; Enemy mix (thrB=$30 thrC=$50 thrD=$70 thrE=$F3):
+;   A=51.17%  B=18.75%  C=12.50%  D=12.50%  E=5.08%
+LEVELPARAMS $0F, $04, $30, $50, $70, $F3, 16200, 20,  44, 36, 1
 
-  ; L11: More E (~8%), more D.
-  ; E: ~8% (236..255) thrE=$EC
-  ; B: 15% (0..38), C: 15% (39..76), D: 15% (77..114)
-  .byte $0E,  $04, $27, $4D, $73, $EC,  $48, $3F   ; 4:30
+; L11
+; Catch: cd4=48 => 192f => 3.20s/attempt
+;       good_thr=32 => 12.50%
+;       expected ≈ 25.60s, cap=1
+; Enemy mix (thrB=$27 thrC=$4D thrD=$73 thrE=$EC):
+;   A=47.27%  B=15.23%  C=14.84%  D=14.84%  E=7.81%
+LEVELPARAMS $0E, $04, $27, $4D, $73, $EC, 16200, 20,  48, 32, 1
 
-  ; L12: End of “normal” set: E ~12%, D higher, spawns quicker.
-  ; E: ~12.5% (224..255) thrE=$E0
-  ; B: 12.5% (0..31), C: 15.6% (32..71), D: 18.75% (72..119)
-  .byte $0D,  $05, $20, $48, $78, $E0,  $50, $46   ; 5:00  (18000 = $4650)
+; L12
+; Catch: cd4=52 => 208f => 3.47s/attempt
+;       good_thr=28 => 10.94%
+;       expected ≈ 31.68s, cap=1
+; Enemy mix (thrB=$20 thrC=$48 thrD=$78 thrE=$E0):
+;   A=40.63%  B=12.50%  C=15.63%  D=18.75%  E=12.50%
+LEVELPARAMS $0D, $05, $20, $48, $78, $E0, 18000, 20,  52, 28, 1
 
 
+; L13 
+LEVELPARAMS $24, $01, $0C, $0C, $0C, $00, 7200,  36,  24, 96, 3
 
+
+StarTiles:
+  .byte STAR_T0, STAR_T1, STAR_T2, STAR_T3
+
+
+; ------------------------------------------------------------
+; RESET
+; - Hardware init
+; - RAM/OAM clear
+; - Initial game state
+; - Enable NMI + rendering
+; ------------------------------------------------------------
 RESET:
   sei
   cld
@@ -502,7 +1012,6 @@ sta score_d4
 
   lda #$00
   sta player_cd
-  sta scroll_y
   sta spawn_cd
 
 lda #$00
@@ -521,7 +1030,7 @@ sta score_hi
 lda #$00
 sta bul_y_prev
 
-lda #$10
+lda #SPAWN_START_DELAY_FR
 sta spawn_cd      ; start with a short delay before first spawn
 
   lda #$03
@@ -589,14 +1098,17 @@ sta debug_mode
   bne @clr_ene
 @clr_ene_done:
 
+lda #$00
+sta PPUCTRL
+sta PPUMASK
 
   ; VRAM init (rendering still OFF)
-  jsr ClearNametable0
-  jsr InitPalettes
+  jsr WaitVBlank
 
-    jsr HUD_Init
-
-  ; jsr DrawTestSprite
+  ; disable NMI (bit 7 = 0)
+  lda PPUCTRL
+  and #%01111111
+  sta PPUCTRL
 
   ; align enabling rendering to vblank boundary
   jsr WaitVBlank
@@ -606,6 +1118,26 @@ sta debug_mode
   lda #$00
   sta PPUSCROLL
   sta PPUSCROLL
+
+
+
+ ; re-enable NMI if you use it
+  lda PPUCTRL
+  ora #%10000000
+  sta PPUCTRL
+jsr InitPalettes
+
+  jsr PPU_BeginVRAM
+  jsr ClearNametable0
+  jsr DrawStarfieldNT0
+  jsr ClearAttributesNT0
+  jsr ClearNametable1
+  jsr DrawStarfieldNT1
+  jsr ClearAttributesNT1
+  jsr PPU_EndVRAM
+
+
+jsr HUD_Init
 
   ; push initial sprites to real OAM once
   lda #$00
@@ -619,22 +1151,69 @@ sta debug_mode
   lda #PPUMASK_BG_SPR ; BG + sprites + show left 8px
   sta PPUMASK
 
+; ------------------------------------------------------------
+; MainLoop
+; - Frame sync via WaitFrame
+; - Poll input
+; - Dispatch by game_state
+; ------------------------------------------------------------
+; ============================================================
+; MAIN LOOP / STATE MACHINE
+; - Runs once per frame (WaitFrame releases after NMI)
+; - Reads controller input
+; - Dispatches to the current game_state handler
+; - Each state handler is responsible for gameplay updates + calling BuildOAM
+;   (NMI handles vblank-only work: OAM DMA + BG/HUD writes)
+; ============================================================
 MainLoop:
   jsr WaitFrame
+
   jsr ReadController1
 
 ; --- DEBUG input handling ---
+; RELEASE NOTE: if you don’t want debug hotkeys in release, stub DebugUpdate or guard it behind a flag.
 jsr DebugUpdate
 
+.if DEBUG_BOSS_SKIP
+
+  ; SELECT + START (new press) => jump to boss
+  lda pad1_new
+  and #BTN_SELECT_START
+  cmp #BTN_SELECT_START
+  bne :+
+
+    ; Optional gate: don’t trigger from title
+    lda game_state
+    cmp #STATE_TITLE
+    beq :+
+
+    jsr DebugJumpToBoss
+:
+
+.endif
+
+
+
+
+; ------------------------------------------------------------
+; State dispatch (game_state)
+; ------------------------------------------------------------
   lda game_state
   cmp #STATE_TITLE
-  beq @state_title
+  bne :+
+    jmp @state_title
+  :
   cmp #STATE_BANNER
   beq @state_banner
   cmp #STATE_PLAY
   beq @state_play
   cmp #STATE_BOSS
   beq @state_boss
+    cmp #STATE_PAUSE
+  bne :+
+    jmp @state_pause
+  :
+
   jmp @state_over
 
 
@@ -643,6 +1222,7 @@ jsr DebugUpdate
 ; “each frame”: count down banner timer
 ; ----------------------------
 @state_banner:
+  jsr ClearPlayerBullets  
   jsr UpdatePlayer          ; optional: allow movement during banner
   jsr BannerUpdate          ; <-- THIS is the “each frame” part
   jsr BuildOAM              ; BuildOAM should call DrawLevelBannerSprites when banner active
@@ -653,35 +1233,76 @@ jsr DebugUpdate
 ; “each frame”: decrement boss_timer, transition to BOSS at 0
 ; ----------------------------
 @state_play:
-
+  ; ---- PAUSE TOGGLE ----
+  lda pad1_new
+  and #BTN_START
+  beq :+
+    lda #STATE_PLAY
+    sta paused_prev_state
+    lda #STATE_PAUSE
+    sta game_state
+    jmp @play_render_only
+:
 
   jsr UpdatePlayer
   jsr UpdateBullets
+  jsr CollideBulletsCatch
+
   jsr UpdateEnemies
+
+  jsr UpdateCatch
+  jsr CollidePlayerCatch
+
   jsr CollideBulletsEnemies
   jsr CollidePlayerEnemies
-  jsr PlayUpdate            ; <-- THIS is the “each frame” boss timer part
+  jsr PlayUpdate
+
+@play_render_only:
   jsr BuildOAM
   jmp MainLoop
 
 ; ----------------------------
-; STATE: BOSS (stub for now)
+; STATE: BOSS 
 ; ----------------------------
 @state_boss:
+
+  lda pad1_new
+  and #BTN_START
+  beq :+
+    lda game_state
+    sta paused_prev_state
+    lda #STATE_PAUSE
+    sta game_state
+    lda #$00
+    sta pause_inited
+    jmp @boss_render_only        ; skip gameplay update this frame
+:
+
   jsr UpdatePlayer
   jsr UpdateBullets
+
+  jsr UpdateCatch
+  jsr CollidePlayerCatch
+  jsr CollideBulletsCatch
+
   jsr BossUpdate
+  jsr BossMoveBounceX
+  jsr BossMoveBounceY
+  jsr UpdateBossBullets
+  jsr CheckPlayerHitByBossBullets
   jsr CollideBulletsBoss
+
+@boss_render_only:
   jsr BuildOAM
   jmp MainLoop
 
 
-
-  jsr BuildOAM
-  jmp MainLoop
 
 ; ----------------------------
-; STATE: OVER
+; STATE: OVER (Game Over)
+; - Accepts START to restart (ResetRun)
+; - Game Over BG blink sequence is driven in NMI using gameover_visible/timers
+; - Draws stats / game over sprites via BuildOAM
 ; ----------------------------
 @state_over:
   lda pad1_new
@@ -691,21 +1312,69 @@ jsr DebugUpdate
     lda #$00
   sta screen_flash_timer
 
-  jsr ResetRun
+    lda pad1_new
+  and #BTN_START
+  beq :+
+    jsr ReturnToTitle
+:
+
   
 @over_draw:
   jsr BuildOAM
   jmp MainLoop
 
+; ----------------------------
+; STATE: TITLE
+; - Blink PRESS START BG tiles (handled via frame counter / visibility flag)
+; - Start game on START
+; - Draw title sprites + any overlays
+; ----------------------------
 @state_title:
-  ; wait for START press
+  jsr NextRand     ; stir RNG so “time-to-press-start” matters
+
   lda pad1_new
   and #BTN_START
   beq :+
 
-    jsr ReseedRNG        ; optional, but nice right before first run
-    jsr ResetRun         ; this sets STATE_BANNER (in your code) or STATE_PLAY if you change it
+    ; optional: also mix in frame counter if you have one
+     jsr ReseedRNG
+
+    ; --- redraw starfield safely (brief render-off) ---
+    lda #$00
+    sta PPUMASK
+    jsr WaitVBlank
+
+  jsr PPU_BeginVRAM
+  jsr ClearNametable0
+  jsr DrawStarfieldNT0
+  jsr ClearAttributesNT0
+  jsr ClearNametable1
+  jsr DrawStarfieldNT1
+  jsr ClearAttributesNT1
+  jsr PPU_EndVRAM
+
+
+    lda #PPUMASK_BG_SPR
+    sta PPUMASK
+
+    jsr ResetRun
 :
+
+  jsr BuildOAM
+  jmp MainLoop
+
+@state_pause:
+  lda pad1_new
+  and #BTN_START
+  beq :+
+    lda paused_prev_state
+    sta game_state
+
+    ; optional but recommended: prevent double-trigger
+    lda pad1
+    sta pad1_prev
+:
+
   jsr BuildOAM
   jmp MainLoop
 
@@ -733,21 +1402,22 @@ NMI:
 
 jsr NextRand
 
-  ; ---- OAM DMA (typical) ----
+; ---- OAM DMA (typical) ----
   lda #$00
   sta OAMADDR
   lda #$02
   sta OAMDMA
 
+ 
 
-  lda screen_flash_timer
+  lda screen_flash_timer      ; screen_flash_timer: nonzero => temporarily force palette/brightness effect
   beq @flash_off
 
   dec screen_flash_timer
 
-  ; grayscale only for first 3 frames ($0E,$0D,$0C)
+; grayscale while timer >= FLASH_GRAY_CUTOFF
   lda screen_flash_timer
-  cmp #$0C
+  cmp #FLASH_GRAY_CUTOFF
   bcs @flash_gray
 
 @flash_normal:
@@ -915,6 +1585,10 @@ jsr NextRand
   lda game_state
   cmp #STATE_BOSS
   bne :+
+
+    lda boss_alive
+    beq :+
+
     lda boss_hp_dirty
     beq :+
       lda #$00
@@ -922,25 +1596,41 @@ jsr NextRand
       jsr WriteBossHPBarBG
 :
 
+
   lda boss_hp_clear_pending
   beq @boss_hp_clear_done
 
-  lda #$00
+  lda #FLAG_CLEAR
   sta boss_hp_clear_pending
+
 
   jsr ClearBossHPBG          ; writes blanks to the boss HP bar area
 
 @boss_hp_clear_done:
 
-  ; ---- mark frame complete ----
-  lda #$01
-  sta nmi_ready
 
   pla
   tay
   pla
   tax
   pla
+
+    ; --- hard reset scroll every frame ---
+  lda PPUSTATUS      ; reset latch
+  lda #$00
+  sta PPUSCROLL      ; X = 0
+  sta PPUSCROLL      ; Y = 0
+
+  ; ensure base nametable is $2000 (optional but recommended)
+  lda #%10000000     ; NMI on, nametable 0
+  sta PPUCTRL
+
+
+
+; now tell the main loop the frame is ready
+lda #$01
+sta nmi_ready
+
   rti
 
 
@@ -1000,7 +1690,7 @@ ClearNametable0:
   sta PPUADDR
 
   lda #$00        ; tile index 0
-  ldx #$40        ; 1024 bytes (tiles+attrs)
+  ldx #$04        ; 4 * 256 = 1024 bytes
   ldy #$00
 @page:
 @byte:
@@ -1011,6 +1701,57 @@ ClearNametable0:
   bne @page
 
   lda PPUSTATUS   ; clear latch after big VRAM write
+  rts
+
+ClearAttributesNT0:
+  lda PPUSTATUS
+  lda #$23
+  sta PPUADDR
+  lda #$C0
+  sta PPUADDR
+  ldx #$40          ; 64 bytes
+  lda #$00
+@loop:
+  sta PPUDATA
+  dex
+  bne @loop
+  rts
+
+
+ClearNametable1:
+  lda PPUSTATUS
+  lda #$24
+  sta PPUADDR
+  lda #$00
+  sta PPUADDR
+
+  lda #$00
+  ldx #$04
+  ldy #$00
+@page:
+@byte:
+  sta PPUDATA
+  iny
+  bne @byte
+  dex
+  bne @page
+
+  lda PPUSTATUS
+  rts
+
+
+ClearAttributesNT1:
+  lda PPUSTATUS
+  lda #$27
+  sta PPUADDR
+  lda #$C0
+  sta PPUADDR
+  ldx #$40
+  lda #$00
+@loop:
+  sta PPUDATA
+  dex
+  bne @loop
   rts
 
 InitPalettes:
@@ -1028,6 +1769,10 @@ InitPalettes:
   bne @p
   rts
 
+; ------------------------------------------------------------
+; DrawTestSprite (DEBUG)
+; - Single sprite used to sanity-check OAM rendering
+; ------------------------------------------------------------
 DrawTestSprite:
   lda #$70
   sta OAM_BUF+0
@@ -1039,6 +1784,25 @@ DrawTestSprite:
   sta OAM_BUF+3
   rts
 
+; ============================================================
+; INPUT
+;
+; Conventions:
+;   pad1       = current button state (bitmask)
+;   pad1_prev  = last frame state
+;   pad1_new   = buttons newly pressed this frame (rising edges)
+;
+; NOTE:
+;   ReadController1 reads raw input only.
+;   Any “meaning” (pause/start/debug toggles) should be handled elsewhere,
+;   but this project currently also stores a couple debug toggles nearby.
+; ============================================================
+
+; ------------------------------------------------------------
+; ReadController1
+; - Latches controller 1, reads 8 buttons into pad1
+; - Produces pad1_new = newly pressed buttons this frame
+; ------------------------------------------------------------
 ReadController1:
   lda pad1
   sta pad1_prev
@@ -1047,7 +1811,8 @@ ReadController1:
   sta JOY1
   lda #$00
   sta JOY1
-
+  ; NES controller serial read: 8 bits, LSB first.
+  ; Bit order after loop matches BTN_* constants used elsewhere.
   ldx #$08
   lda #$00
   sta pad1
@@ -1067,6 +1832,23 @@ ReadController1:
 
 ; debug_mode: 0=normal, 1=A, 2=B, 3=C, 4=D, 5=E
 
+; ============================================================
+; DEBUG / TEST HELPERS
+; RELEASE NOTE: disable or fence these for final builds.
+;
+; These hooks are meant for development only.
+; Keep them isolated so they don’t subtly affect release gameplay.
+;
+; Common flags:
+;   DEBUG_DRAW_TEST   : bypass updates and draw a known-good sprite
+;   debug_mode        : force enemy type (A..E) or 0 for normal behavior
+;   draw_test_active  : one-shot guard so tests don’t respawn endlessly
+;
+; TIP:
+;   If something “impossible” is happening in gameplay,
+;   search for DEBUG_* or debug_mode first.
+; ============================================================
+
 DebugUpdate:
   lda pad1_new
   and #BTN_SELECT
@@ -1082,8 +1864,51 @@ DebugUpdate:
 @done:
   rts
 
+; ------------------------------------------------------------
+; DebugJumpToBoss
+; - Dev hotkey: instantly enter boss phase
+; - Safe: clears actors, spawns boss, marks boss bar dirty, flashes
+; ------------------------------------------------------------
+DebugJumpToBoss:
+  jsr ClearActors
+
+  lda #STATE_BOSS
+  sta game_state
+
+  lda #FLASH_BOSS_START_FR
+  sta screen_flash_timer
+
+  jsr BossSpawn            ; sets boss_alive, boss_x/y, boss_hp, dirty, etc.
+
+  rts
 
 
+; ============================================================
+; PLAYER
+;
+; Player coordinate system:
+;   player_x / player_y = top-left of a 2x2 metasprite (16x16).
+;
+; Timers:
+;   invuln_timer      : i-frames after being hit (player cannot be damaged)
+;   good_flash_timer  : short palette flash (powerups / good collision feedback)
+;
+; Movement:
+;   - D-pad moves ship; X clamped to safe range
+;   - (If you add vertical movement later, mirror the clamp pattern)
+;
+; Firing:
+;   - A fires bullets with a cooldown (fire_cd)
+;   - gun_side alternates spawn point for a “dual cannon” feel
+; ============================================================
+
+; ------------------------------------------------------------
+; UpdatePlayer
+; - Move ship (D-pad) with clamps
+; - Fire bullets while holding A (cooldown)
+; - Tick invulnerability + good_flash timers
+; - ComputePlayerAttr (palette flash)
+; ------------------------------------------------------------
 UpdatePlayer:
 
   ; ----------------------------
@@ -1096,10 +1921,10 @@ UpdatePlayer:
   beq @check_right
   lda player_x
   sec
-  sbc #$02
-  cmp #$08
+  sbc #PLAYER_MOVE_SPD_X
+  cmp #PLAYER_MIN_X
   bcs :+
-    lda #$08
+    lda #PLAYER_MIN_X
 :
   sta player_x
 
@@ -1109,10 +1934,10 @@ UpdatePlayer:
   beq @vert
   lda player_x
   clc
-  adc #$02
-  cmp #$F0
+  adc #PLAYER_MOVE_SPD_X
+  cmp #PLAYER_MAX_X
   bcc :+
-    lda #$F0
+    lda #PLAYER_MAX_X
 :
   sta player_x
 
@@ -1120,48 +1945,77 @@ UpdatePlayer:
   ; Vertical movement
   ; ----------------------------
 @vert:
-  ; up
+  ; ---- UP ----
   lda pad1
   and #BTN_UP
   beq @check_down
+
   lda player_y
   sec
-  sbc #$02
-  cmp #$10
+  sbc #PLAYER_MOVE_SPD_Y
+  cmp #PLAYER_MIN_Y
   bcs :+
-    lda #$10
+    lda #PLAYER_MIN_Y
 :
   sta player_y
 
 @check_down:
   lda pad1
   and #BTN_DOWN
-  beq @fire_cooldown
+  beq @after_vert
+
   lda player_y
   clc
-  adc #$02
-  cmp #$D0
+  adc #PLAYER_MOVE_SPD_Y
+  cmp #PLAYER_MAX_Y
   bcc :+
-    lda #$D0
+    lda #PLAYER_MAX_Y
 :
   sta player_y
 
+@after_vert:
+  ; fall through
+
+
+; ---- Jam timer tick (once per frame) ----
+  lda jam_timer
+  beq :+
+  dec jam_timer
+:
+
   ; ----------------------------
   ; Fire (hold A) with cooldown
+  ; - gun_jam_timer blocks firing but cooldown still ticks
   ; ----------------------------
-@fire_cooldown:
-  lda player_cd
-  beq @try_fire
-  dec player_cd
-  jmp @done
 
-@try_fire:
+  ; tick jam timer
+  lda gun_jam_timer
+  beq :+
+  dec gun_jam_timer
+:
+
+  ; tick cooldown
+  lda player_cd
+  beq :+
+  dec player_cd
+:
+
+  ; if jammed, skip firing
+  lda gun_jam_timer
+  bne @done
+
+  ; if cooldown still active, skip firing
+  lda player_cd
+  bne @done
+
+  ; check fire input
   lda pad1
   and #BTN_A
   beq @done
 
+  ; FIRE
   jsr FireBulletLR
-  lda #$06          ; fire rate (lower = faster). Try 6 first.
+  lda #FIRE_COOLDOWN_FR
   sta player_cd
 
 @done:
@@ -1180,6 +2034,22 @@ UpdatePlayer:
   rts
 
 
+
+
+
+
+; ============================================================
+; BULLETS
+;
+; Slot arrays (BULLET_MAX entries):
+;   bul_alive[i]  : 0/1
+;   bul_x/bul_y   : position (top-left of sprite)
+;   bul_y_prev    : previous Y (helps swept collision / “tunneling”)
+;
+; Behavior:
+;   - Bullets travel upward at a fixed speed (currently hardcoded #$05)
+;   - Bullets die when they leave the top of the screen
+; ============================================================
 
 ; ----------------------------
 ; FireBulletLR
@@ -1204,7 +2074,7 @@ FireBulletLR:
   ; spawn Y slightly above ship
   lda player_y
   sec
-  sbc #$04
+  sbc #BULLET_SPAWN_Y_OFF
   sta bul_y,x
   lda bul_y,x
   sta bul_y_prev,x
@@ -1217,7 +2087,7 @@ FireBulletLR:
   ; right gun: player_x + 12 (for a 16px ship, near right side)
   lda player_x
   clc
-  adc #$0C
+  adc #GUN_RIGHT_X_OFF
   sta bul_x,x
   lda #$00
   sta gun_side
@@ -1236,6 +2106,12 @@ FireBulletLR:
   rts
 
 
+; ------------------------------------------------------------
+; UpdateBullets
+; - Moves bullets upward
+; - Tracks previous Y for swept collision
+; - Kills bullets that leave the top
+; ------------------------------------------------------------
 UpdateBullets:
   ldx #$00
 @loop:
@@ -1251,13 +2127,13 @@ UpdateBullets:
 
   ; move up
   sec
-  sbc #$05          ; bullet speed
+  sbc #BULLET_SPD          ; bullet speed (px/frame)
   sta bul_y,x
 
-  bcc @kill         ; underflow (wrapped) => bullet left the top
+  bcc @kill   ; carry clear => wrapped past 0 => offscreen
 
   ; optional extra safety: also kill if very near top
-  cmp #$08
+  cmp #BULLET_KILL_Y
   bcs @next
 
 @kill:
@@ -1279,6 +2155,30 @@ UpdateBullets:
 ;   sprites 4-7  = bullets
 ;   sprites 8..  = enemies
 ; ----------------------------
+; ============================================================
+; RENDERING (SPRITES / OAM SHADOW)
+;
+; Overview:
+;   - Main loop builds an OAM shadow buffer (OAM_BUF) each frame.
+;   - NMI performs the actual OAM DMA ($4014) to upload sprites to PPU.
+;
+; Sprite slot map (by convention in this project):
+;   0..3   : player ship (2x2 metasprite = 4 hardware sprites)
+;   4..7   : bullets (up to BULLET_MAX sprites)
+;   8..??  : enemies (mix of 1x1 and 2x2 metasprites)
+;   later  : boss (2x2) + UI overlays (banner / score / game over)
+;
+; Notes:
+;   - “Hide sprite” convention: set Y=$FE in OAM to hide.
+;   - Keep OAM writes in RAM only; do not touch $2004 outside NMI/DMA.
+; ============================================================
+
+; ------------------------------------------------------------
+; BuildOAM
+; - Clears OAM shadow
+; - Draws sprites for the current game_state
+; - Does NOT do OAM DMA (NMI does that)
+; ------------------------------------------------------------
 BuildOAM:
   jsr ClearOAMShadow
 
@@ -1330,10 +2230,9 @@ BuildOAM:
 
   ; ----------------------------
   ; Player metasprite (sprites 0-3)
-  ; tiles: 01,02,03,04
   ; ----------------------------
 
-  ; sprite 0 (TL)
+  ; TL
   lda player_y
   sta OAM_BUF+0
   lda #$01
@@ -1343,7 +2242,7 @@ BuildOAM:
   lda player_x
   sta OAM_BUF+3
 
-  ; sprite 1 (TR)
+  ; TR
   lda player_y
   sta OAM_BUF+4
   lda #$02
@@ -1355,7 +2254,7 @@ BuildOAM:
   adc #$08
   sta OAM_BUF+7
 
-  ; sprite 2 (BL)
+  ; BL
   lda player_y
   clc
   adc #$08
@@ -1367,7 +2266,7 @@ BuildOAM:
   lda player_x
   sta OAM_BUF+11
 
-  ; sprite 3 (BR)
+  ; BR
   lda player_y
   clc
   adc #$08
@@ -1381,10 +2280,12 @@ BuildOAM:
   adc #$08
   sta OAM_BUF+15
 
+
+
   ; ----------------------------
-  ; Bullets (sprites 4-7)
+  ; Bullets (sprite start at 5 )
   ; ----------------------------
-  ldy #$10          ; OAM offset for sprite #4 (16 bytes in)
+  ldy #$10  ; 4 * 4 = $10
 
   ldx #$00
 @bul_draw:
@@ -1427,11 +2328,11 @@ BuildOAM:
 @bul_done:
 
   ; ----------------------------
-  ; Enemies (sprites 8..)
+  ; Enemies (sprites 24..)
   ; - A/B are 1x1
   ; - C/D/E are 2x2 metasprites
   ; ----------------------------
-  ldy #$20          ; OAM offset for sprite #8
+  ldy #$20   
 
   ldx #$00
 @ene_draw:
@@ -1605,7 +2506,20 @@ BuildOAM:
 
 
 @ene_skip:
-  ; slot is dead: hide worst-case (2x2 = 4 sprites = 16 bytes)
+  lda ene_type,x
+  cmp #EN_C
+  bcs @skip_16        ; C/D/E would have been 2x2
+
+  ; A/B would have been 1x1: hide 1 sprite (4 bytes)
+  lda #$FE
+  sta OAM_BUF,y
+  tya
+  clc
+  adc #$04
+  tay
+  jmp @ene_next
+
+@skip_16:
   lda #$FE
   sta OAM_BUF,y
   sta OAM_BUF+4,y
@@ -1620,48 +2534,23 @@ BuildOAM:
 
 
 
+
 @ene_next:
   inx
   jmp @ene_draw
 
 @ene_done:
 
-  ; ---- BOSS sprites (append after enemies) ----
+  ; ---- BOSS sprites + boss bullets (boss state only) ----
   lda game_state
   cmp #STATE_BOSS
-  bne :+
+  bne @after_boss_draw
+
     jsr DrawBossSprites     ; uses Y as current OAM offset
-:
+    jsr DrawBossBullets_Fixed   ; sprites 56–59 ($E0..$EF)
+@after_boss_draw:
 
-  ; ---- hide sprites after dynamic usage ----
-  tya
-  tax
-@hide_rest:
-  lda #$FE
-  sta OAM_BUF,x
-  inx
-  inx
-  inx
-  inx
-  bne @hide_rest
-
-
-  ; ---- score sprites ----
-  lda game_state
-  cmp #STATE_TITLE
-  beq @score_hide
-  cmp #STATE_OVER
-  beq @score_hide
-
-@score_show:
-  ;jsr DrawScoreSprites
-  jmp @score_done
-
-@score_hide:
-  jsr HideScoreSprites
-
-@score_done:
-
+  jsr DrawCatchSprites
 
   ; ---- banner overlay ----
   lda game_state
@@ -1670,13 +2559,38 @@ BuildOAM:
 
 @hide_banner:
   jsr HideBannerSprites
-  jmp @done
+  jmp @after_banner
 
 @draw_banner:
   jsr DrawLevelBannerSprites
 
-@done:
+@after_banner:
+   ; --------------------------------------------
+  ; Hide remaining sprites (but DO NOT touch
+  ; fixed boss bullet slots at $E0..$EF)
+  ; --------------------------------------------
+  tya
+  and #$FC          ; align to sprite boundary
+
+  cmp #$F0
+  bcs :+
+    lda #$F0        ; clamp start to $F0 so we won't overwrite $E0..$EF
+:
+  tax
+
+@hide_tail:
+  lda #$FE
+  sta OAM_BUF,x
+  inx
+  inx
+  inx
+  inx
+  bne @hide_tail
   rts
+
+
+
+
 
 
 
@@ -1688,6 +2602,41 @@ BuildOAM:
 ; - choose X (size-aware, decorrelated)
 ; - init per-type params (dx/timer)
 ; ============================================================
+; ============================================================
+; ENEMY SYSTEM
+;
+; Data layout (slot arrays, ENEMY_MAX entries):
+;   ene_alive[i]   : 0/1
+;   ene_x/ene_y    : top-left position (pixels)
+;   ene_y_prev     : previous Y (for swept / “tunneling” fixes if needed)
+;   ene_type       : EN_A..EN_E (enemy visual / behavior)
+;   obj_kind       : 0=enemy, 1=good-mandatory, 2=powerup1, 3=powerup2
+;   ene_variant    : 0=solid, 1=accent (palette/alt art)
+;   ene_spd        : per-enemy vertical speed or subtype param
+;   ene_dx         : signed horizontal drift (-2..+2 as two’s complement)
+;   ene_timer      : per-enemy timer / phase accumulator
+;
+; Type behavior summary (UpdateEnemies):
+;   EN_A: straight fall
+;   EN_B: horizontal drift + bounce at edges (uses ene_dx)
+;   EN_C: oscillate/zig-zag (uses ene_timer + ene_dx)
+;   EN_D: pause/step pattern (uses ene_timer)
+;   EN_E: “home”/track toward player X (uses ene_dx or direct adjust)
+;
+; HITBOX NOTE:
+;   - Rendering: some enemies are drawn as 2x2 metasprites (16x16).
+;   - Collision right now treats enemies as 8x8 (top-left + 7).
+;   - That mismatch is okay for gameplay feel, but if you want “true” 16x16
+;     collisions later, branch on ene_type and use width/height = $0F.
+; ============================================================
+
+; ------------------------------------------------------------
+; SpawnEnemy
+; - Finds a free enemy slot
+; - Chooses type via debug_mode or level thresholds
+; - Chooses X on 8px grid with size-aware clamps
+; - Initializes per-type behavior params (dx/timer)
+; ------------------------------------------------------------
 SpawnEnemy:
 .if DEBUG_DRAW_TEST
   lda draw_test_active
@@ -1915,6 +2864,15 @@ UpdateEnemies:
 :
 .endif
 
+  ; ----------------------------------------------------------
+  ; Per-frame enemy update flow:
+  ;   1) Handle spawn cooldown (spawn_cd)
+  ;   2) For each active slot:
+  ;        - store prev Y
+  ;        - apply vertical fall (level_enemy_spd + per-slot tweaks)
+  ;        - apply type-specific behavior (EN_A..EN_E)
+  ;        - kill if past ENEMY_KILL_Y
+  ; ----------------------------------------------------------
 
 
   ; ---- spawn cooldown ----
@@ -1925,8 +2883,9 @@ UpdateEnemies:
 
 @do_spawn:
   jsr SpawnEnemy
-  lda level_spawn_cd
+  lda level_enemy_cd
   sta spawn_cd
+
 
 
 @move:
@@ -2059,7 +3018,9 @@ UpdateEnemies:
 @c_chk_right:
   lda ene_x,x
   cmp tmp0
-  bcc @after_behaviors
+  bcs :+
+    jmp @after_behaviors
+  :
   lda tmp0
   sta ene_x,x
   lda #$FF
@@ -2070,9 +3031,11 @@ UpdateEnemies:
 
 @beh_D:
   lda ene_timer,x
-  beq @d_maybe_rearm
+  beq @d_active
 
-  ; paused: undo the base fall this frame
+  ; ----------------------------
+  ; PAUSED: undo the base fall this frame
+  ; ----------------------------
   dec ene_timer,x
   lda ene_y,x
   sec
@@ -2080,14 +3043,66 @@ UpdateEnemies:
   sta ene_y,x
   jmp @after_behaviors
 
+@d_active:
+  ; ----------------------------
+  ; ACTIVE: make D more dangerous
+  ; - add a downward "lurch" (extra speed)
+  ; - drift 1px toward player
+  ; ----------------------------
+
+  ; lurch = 1 (always) + bonus when spd is small
+  lda #$01            ; base lurch
+  ldy level_enemy_spd
+  cpy #$02
+  bcs :+
+    clc
+    adc #$01          ; +1 more only when spd==1  (=> lurch 2)
+:
+  clc
+  adc ene_y,x
+  sta ene_y,x
+
+  lda frame_lo
+  and #$01
+  bne @d_maybe_rearm
+
+  ; (2) DRIFT: move 1px toward player_x
+  lda player_x
+  cmp ene_x,x
+  beq @d_maybe_rearm     ; aligned: no drift
+  bcc @d_drift_left      ; player_x < ene_x => move left
+
+@d_drift_right:
+  inc ene_x,x
+  jmp @d_clamp_x
+
+@d_drift_left:
+  dec ene_x,x
+  ; fallthrough
+
+@d_clamp_x:
+  lda ene_x,x
+  cmp #$08
+  bcs :+
+    lda #$08
+    sta ene_x,x
+:
+  lda ene_x,x
+  cmp tmp0
+  bcc :+
+    lda tmp0
+    sta ene_x,x
+:
+
 @d_maybe_rearm:
-  ; random chance per frame to start a pause
   jsr NextRand
-  cmp #$20            ; ~12.5% chance
+  cmp #$20
   bcs @after_behaviors
-  lda #$08            ; pause length
+  lda #$08
   sta ene_timer,x
   jmp @after_behaviors
+
+
 
 
 @beh_E:
@@ -2148,7 +3163,21 @@ UpdateEnemies:
 ; - if bullet point is inside enemy 8x8 box -> kill both
 ; - optionally add score
 ; ----------------------------
+; ============================================================
+; COLLISIONS
+; - Bullet vs Enemy
+; - Player vs Enemy
+;
+; NOTE ON ENEMY SIZE:
+;   Collisions currently assume enemies are 8x8 (x+7, y+7).
+;   If you want 16x16 for 2x2 enemies, create a per-type width/height:
+;     - small: 7
+;     - large: 15
+;   and use those in the overlap tests.
+; ============================================================
+
 CollideBulletsEnemies:
+  ; Uses simple AABB overlap. Enemy hitbox is currently treated as 8x8.
   ldx #$00                  ; bullet index
 @bul_loop:
   cpx #BULLET_MAX
@@ -2165,20 +3194,19 @@ CollideBulletsEnemies:
   lda ene_alive,y
   beq @ene_next
 
-; ---- X overlap (8x8 bullet vs 8x8 enemy) ----
-; if bul_x > ene_x+7 => no
-lda ene_x,y
-clc
-adc #$05
-cmp bul_x,x
-bcc @ene_next
+  ; ---- enemy extent (7 or 15) ----
+  jsr GetEnemyExtent
+  sta tmp2              ; tmp2 = enemy extent
 
-; if ene_x > bul_x+7 => no
-lda bul_x,x
-clc
-adc #$07
-cmp ene_x,y
-bcc @ene_next
+  ; ---- X range? (bullet point inside enemy box) ----
+  lda bul_x,x
+  cmp ene_x,y
+  bcc @ene_next
+  sec
+  sbc ene_x,y
+  cmp tmp2
+  bcs @ene_next
+
 
 
   ; ---- Y check (swept with bullet height) ----
@@ -2187,11 +3215,11 @@ bcc @ene_next
   ; enemy_bottom_now = ene_y + 7
   ; enemy_top_prev = ene_y_prev
 
-  ; enemy_bottom_now -> tmp
   lda ene_y,y
   clc
-  adc #$07
+  adc tmp2              ; enemy_bottom_now = ene_y + extent
   sta tmp
+
 
   ; bullet_top_now <= enemy_bottom_now ?
   lda bul_y,x
@@ -2233,8 +3261,7 @@ bcc @ene_next
 ; CollidePlayerEnemies
 ; 16x16 player vs 8x8 enemy
 ; - ignores hits if invuln_timer > 0
-; - on hit: kill enemy, decrement lives, set GAME_OVER if lives hits 0
-; - otherwise start invuln
+; - on hit: kill enemy, call PlayerTakeHit, stop after one hit/frame
 ; ----------------------------
 CollidePlayerEnemies:
   lda invuln_timer
@@ -2246,75 +3273,203 @@ CPE_EnemyLoop:
   bcs CPE_Done
 
   lda ene_alive,y
+  jsr GetEnemyExtent
+  sta tmp2              ; tmp2 = enemy extent
+
   beq CPE_NextEnemy
 
   ; ---- X overlap? ----
-  ; if (player_x + 15) < ene_x => no hit
   lda player_x
   clc
   adc #$0F
   cmp ene_x,y
   bcc CPE_NextEnemy
 
-  ; if (ene_x + 7) < player_x => no hit
   lda ene_x,y
   clc
-  adc #$07
+  adc tmp2
   cmp player_x
   bcc CPE_NextEnemy
 
+
   ; ---- Y overlap? ----
-  ; if (player_y + 15) < ene_y => no hit
   lda player_y
   clc
   adc #$0F
   cmp ene_y,y
   bcc CPE_NextEnemy
 
-  ; if (ene_y + 7) < player_y => no hit
   lda ene_y,y
   clc
-  adc #$07
+  adc tmp2
   cmp player_y
   bcc CPE_NextEnemy
 
+
   ; ---- HIT ----
-  lda #$00
+  lda #FLAG_CLEAR
   sta ene_alive,y
 
-  ; lose life
-  lda lives
-  beq CPE_SetOver
-  sec
-  sbc #$01
-  sta lives
-    jsr HUD_MarkDirty     
-  beq CPE_SetOver
-
-  ; start i-frames
-  lda #$30
-  sta invuln_timer
-  rts
-
-CPE_SetOver:
-  jsr ClearActors
-  lda #STATE_OVER
-  sta game_state
-
-  lda #$12              ; flash duration (18 frames) tweak to taste
-  sta screen_flash_timer
-
-  rts
-
+  jsr PlayerTakeHit
+  rts                  ; stop after one hit per frame
 
 CPE_NextEnemy:
   iny
-  bne CPE_EnemyLoop
+  jmp CPE_EnemyLoop
 
 CPE_Done:
   rts
 
+; ------------------------------------------------------------
+; GetEnemyExtent
+; in:  Y = enemy index
+; out: A = extent (7 for 8x8, 15 for 16x16)
+; uses: none (A only)
+; ------------------------------------------------------------
+GetEnemyExtent:
+  lda ene_type,y
+  cmp #EN_C
+  bcc @small          ; A/B are < EN_C
+    lda #$0F          ; 16x16 => +15
+    rts
+@small:
+  lda #$07            ; 8x8  => +7
+  rts
 
+; ------------------------------------------------------------
+; PlayerTakeHit
+; - Flash screen
+; - Decrement lives (if >0)
+; - Mark HUD dirty
+; - Start invulnerability frames
+; - If lives reaches 0 => PlayerSetOver
+; ------------------------------------------------------------
+PlayerTakeHit:
+  lda #FLASH_HIT_FR
+  sta screen_flash_timer
+
+  lda lives
+  beq PlayerSetOver          ; already 0
+
+  jsr SafeDecrementLives
+  jsr HUD_MarkDirty          ; <-- ALWAYS redraw hearts after a hit
+
+  lda lives
+  beq PlayerSetOver          ; if we just hit 0, go over now
+
+  lda #INVULN_FRAMES
+  sta invuln_timer
+  rts
+
+
+
+; ------------------------------------------------------------
+; PlayerSetOver
+; - Common game-over transition
+; ------------------------------------------------------------
+PlayerSetOver:
+  jsr ClearActors
+  lda #STATE_OVER
+  sta game_state
+
+  lda #FLASH_HIT_FR
+  sta screen_flash_timer
+
+  lda #FLAG_SET
+  sta boss_hp_clear_pending
+
+  rts
+
+RedrawStarfieldOnRestart:
+  ; --- rendering OFF ---
+  lda #$00
+  sta PPUMASK
+
+  jsr WaitVBlank        ; get safely into vblank
+
+  jsr ReseedRNG         ; IMPORTANT: do this BEFORE drawing stars
+
+  jsr PPU_BeginVRAM
+  jsr ClearNametable0
+  jsr DrawStarfieldNT0
+  jsr ClearAttributesNT0
+  jsr ClearNametable1
+  jsr DrawStarfieldNT1
+  jsr ClearAttributesNT1
+  jsr PPU_EndVRAM
+
+
+  ; clean scroll latch + set 0,0
+  lda PPUSTATUS
+  lda #$00
+  sta PPUSCROLL
+  sta PPUSCROLL
+
+  ; --- rendering back ON ---
+  lda #PPUMASK_BG_SPR
+  sta PPUMASK
+  rts
+
+ReturnToTitle:
+  ; --- reset title-specific flags so title draws again ---
+  lda #$00
+  sta title_inited
+  sta press_visible
+  sta title_visible
+  sta gameover_visible
+  sta gameover_blink_timer
+  sta gameover_blink_phase
+
+  ; (optional) reset scroll vars if you have them
+  ; lda #$00
+  ; sta scroll_x
+  ; sta scroll_y_lo
+  ; sta scroll_y_hi
+
+  ; --- redraw starfield safely (rendering off inside helper) ---
+  jsr RedrawStarfieldOnRestart
+
+  lda #STATE_TITLE
+  sta game_state
+  rts
+
+; call before any big VRAM write (nametables, attributes, etc.)
+PPU_BeginVRAM:
+  ; disable NMI so it can't fight you for PPU regs mid-write
+  lda PPUCTRL
+  and #%01111111
+  sta PPUCTRL
+
+  ; rendering off
+  lda #$00
+  sta PPUMASK
+
+  ; wait for vblank boundary
+  jsr WaitVBlank
+
+  ; clear latch + set scroll to 0,0 (avoids "streak" artifacts)
+  lda PPUSTATUS
+  lda #$00
+  sta PPUSCROLL
+  sta PPUSCROLL
+  rts
+
+PPU_EndVRAM:
+  ; clear latch again (safe)
+  lda PPUSTATUS
+  lda #$00
+  sta PPUSCROLL
+  sta PPUSCROLL
+
+  ; re-enable NMI
+  lda PPUCTRL
+  ora #%10000000
+  sta PPUCTRL
+
+  ; rendering on (use your normal mask)
+  lda #PPUMASK_BG_SPR
+  sta PPUMASK
+  rts
 
 ; ----------------------------
 ; ResetRun
@@ -2322,13 +3477,36 @@ CPE_Done:
 ; ----------------------------
 ResetRun:
 
-lda #$18
-sta level_spawn_cd
-sta spawn_cd
+  ; ---- clear catch objects ----
+  ldx #$00
+@clr_catch:
+  cpx #CATCH_MAX
+  bcs @clr_catch_done
+  lda #$00
+  sta catch_alive,x
+  sta catch_x,x
+  sta catch_y,x
+  inx
+  bne @clr_catch
+@clr_catch_done:
+
+  ; ---- seed catch spawn cooldown ----
+
+  lda #STATE_PLAY
+  sta paused_prev_state
+
 
 lda #$00          ; start in normal mode
 sta debug_force_type
 
+  lda #FLAG_SET
+  sta boss_hp_clear_pending
+
+  lda #FLAG_CLEAR
+  sta boss_hp_dirty
+  sta boss_alive
+  sta boss_hp
+  sta boss_hp_max
 
 
 
@@ -2338,9 +3516,13 @@ sta debug_force_type
   sta draw_test_done
 .endif
 
-  lda #$00
+  lda #$00       ; starting level
   sta level_idx
-  jsr LoadLevelParams
+ jsr LoadLevelParams
+
+   jsr ReseedCatchSpawn
+
+  jsr ClearActors          ; (ok)
 
   lda #60
   sta level_banner
@@ -2374,7 +3556,7 @@ sta debug_force_type
   sta score_d3
   sta score_d4
 
-  lda #$03
+  lda #$03         ; starting lives
   sta lives
 
   ; clear bullets
@@ -2408,6 +3590,219 @@ sta debug_force_type
 
   jsr HUD_Init
 
+  rts
+
+ReseedCatchSpawn:
+  jsr NextRand
+  and #$7F                  ; 0..127
+  ; reduce to 0..(CATCH_SPAWN_VAR-1) if VAR is power-of-two; for 90 it isn't.
+  ; For now this is fine. Later we can do a tiny mod loop if you care.
+  clc
+  adc #CATCH_SPAWN_MIN
+  sta catch_cd
+  rts
+
+; ---------------------------------
+; CountActiveCatch -> A = count   (also stores in tmp0 if you want)
+; ---------------------------------
+CountActiveCatch:
+  ldx #$00
+  lda #$00
+@loop:
+  cpx #CATCH_MAX
+  bcs @done
+  ldy catch_alive,x
+  beq @next
+  clc
+  adc #$01
+@next:
+  inx
+  jmp @loop
+@done:
+  sta tmp0          ; optional: keep a copy
+  rts
+
+; ------------------------------------------------------------
+; SpawnCatch
+; returns: C=1 spawned, C=0 skipped
+; ------------------------------------------------------------
+SpawnCatch:
+  jsr CountActiveCatch     ; A = active count
+  cmp level_catch_cap
+  bcc @can_spawn           ; count < cap
+    clc                    ; skipped
+    rts
+
+@can_spawn:
+  ; find a free slot
+  ldx #$00
+@find:
+  cpx #CATCH_MAX
+  bcs @no_slot
+  lda catch_alive,x
+  beq @use
+  inx
+  bne @find
+
+@use:
+  lda #$01
+  sta catch_alive,x
+
+  lda #CATCH_SPAWN_Y
+  sta catch_y,x
+
+  lda #CATCH_TILE_CORE
+  sta catch_tile,x
+
+  lda #CATCH_ATTR        ; <-- ADD THIS
+  sta catch_attr,x       ; <-- ADD THIS
+
+
+  ; ---- X position (multiples of 8, with failsafe) ----
+  lda #$10
+  sta tmp1               ; <-- use tmp1, not tmp0
+
+@rand_x:
+  jsr NextRand
+  and #$F8
+  cmp #$08
+  bcc @retry
+  cmp #$F0
+  bcs @retry
+  sta catch_x,x
+  sec                    ; spawned
+  rts
+
+@retry:
+  dec tmp1
+  bne @rand_x
+
+  lda #$80
+  sta catch_x,x
+  sec                    ; spawned (fallback still counts as spawn)
+  rts
+
+@no_slot:
+  clc                    ; skipped (no free slot)
+  rts
+
+
+
+
+UpdateCatch:
+  ; ---- spawn cooldown ----
+  lda catch_cd
+  beq @do_spawn
+  dec catch_cd
+  jmp @move
+
+@do_spawn:
+  jsr NextRand
+  cmp level_catch_good_thr
+  bcs @reload_cd          ; gate failed -> no reseed
+
+  jsr SpawnCatch          ; cap/slot may still block
+  jsr ReseedCatchSpawn    ; only reseed when we at least tried
+
+@reload_cd:
+  lda level_catch_cd4
+  bne :+
+    lda #$01
+:
+  asl
+  asl
+  sta catch_cd
+  jmp @move
+
+
+
+
+@move:
+  ldx #$00
+@loop:
+  cpx #CATCH_MAX
+  bcs @done_all
+
+  lda catch_alive,x
+  beq @next
+
+  ; y += CATCH_SPD   (or make this a knob later too)
+  lda catch_y,x
+  clc
+  adc #CATCH_SPD
+  sta catch_y,x
+
+  ; kill if offscreen
+  cmp #CATCH_KILL_Y
+  bcc @next
+    lda #$00
+    sta catch_alive,x
+
+@next:
+  inx
+  jmp @loop          ; (safer than bne if CATCH_MAX might change)
+
+@done_all:
+  rts
+
+
+CollidePlayerCatch:
+  ldx #$00
+@loop:
+  cpx #CATCH_MAX
+  bcs @done
+
+  lda catch_alive,x
+  beq @next
+
+  ; ---- dx = catch_x - player_x ----
+  lda catch_x,x
+  sec
+  sbc player_x
+  bcs @dx_pos
+    eor #$FF
+    clc
+    adc #$01
+@dx_pos:
+  ; if dx >= PLAYER_W (16) => no collide
+  cmp #PLAYER_W
+  bcs @next
+
+  ; ---- dy = catch_y - player_y ----
+  lda catch_y,x
+  sec
+  sbc player_y
+  bcs @dy_pos
+    eor #$FF
+    clc
+    adc #$01
+@dy_pos:
+  cmp #PLAYER_H
+  bcs @next
+
+  ; ---- COLLISION! ----
+  lda #$00
+  sta catch_alive,x
+
+  ; award: +1 life (cap at HUD_MAX_LIVES)
+  lda lives
+  cmp #HUD_MAX_LIVES      ; <-- NO "$" here
+  bcs @after_life         ; if lives >= max, don't increase
+
+  inc lives
+  jsr HUD_MarkDirty       ; lives changed, so redraw hearts next NMI
+
+@after_life:
+  ; optional: add score, flash, sound, etc.
+  ; jsr AddScoreSmall
+  ; lda #GOOD_FLASH_FR : sta good_flash_timer
+
+@next:
+  inx
+  bne @loop
+
+
+@done:
   rts
 
 
@@ -2637,12 +4032,74 @@ BitLoop:
   sta score_d4
   rts
 
+
+; ------------------------------------------------------------
+; DrawCatchSprites
+; - Draws CATCH_MAX 1x1 sprites starting at CATCH_OAM_BASE
+; ------------------------------------------------------------
+DrawCatchSprites:
+  ldx #$00
+  ldy #CATCH_OAM_BASE      ; byte offset into OAM_BUF
+
+@loop:
+  cpx #CATCH_MAX
+  bcs @done
+
+  lda catch_alive,x
+  beq @hide_one
+
+  ; Y
+  lda catch_y,x
+  sta OAM_BUF,y
+  iny
+
+  ; TILE (per-object)
+  lda catch_tile,x
+  sta OAM_BUF,y
+  iny
+
+  ; ATTR (either per-object or constant)
+  ; --- option A: constant ---
+  ; lda #CATCH_ATTR
+  ; --- option B: array ---
+  lda catch_attr,x
+  sta OAM_BUF,y
+  iny
+
+  ; X
+  lda catch_x,x
+  sta OAM_BUF,y
+  iny
+
+  inx
+  jmp @loop
+
+@hide_one:
+  lda #$FE
+  sta OAM_BUF,y     ; hide sprite by Y=$FE
+  iny
+  iny
+  iny
+  iny
+  inx
+  jmp @loop
+
+@done:
+  rts
+
+
 ; ----------------------------
 ; DrawScoreSprites
 ; Draws 5 digits using sprites 59..63 (OAM $EC..$FF)
 ; Leading zeros blanked (tile 00) except the last digit.
 ; Requires: blank tile is tile $00
 ; ----------------------------
+; ------------------------------------------------------------
+; DrawScoreSprites
+; - Draws score digits as sprites (overlay layer)
+; - Used when BG HUD is disabled or for special screens
+; - NOTE: currently disabled in BuildOAM (score is BG tiles instead)
+; ------------------------------------------------------------
 DrawScoreSprites:
   ldx #SCORE_OAM
   lda #SCORE_X0
@@ -2794,36 +4251,68 @@ AddScore1:
   rts
 
 LoadLevelParams:
-  ; Y = level_idx * 8
+  ; Y = level_idx * LEVEL_STRIDE (12)
   lda level_idx
   asl
   asl
+  sta tmp0
   asl
+  clc
+  adc tmp0
   tay
 
-  lda LevelParams,y
+  ; --- base 8 bytes ---
+  lda LevelParams,y        ; [0] spawn_cd
   sta level_spawn_cd
+  sta spawn_cd
   iny
-  lda LevelParams,y
+  lda LevelParams,y        ; [1] enemy_spd
   sta level_enemy_spd
   iny
-  lda LevelParams,y
+  lda LevelParams,y        ; [2] thrB
   sta level_thrB
   iny
-  lda LevelParams,y
+  lda LevelParams,y        ; [3] thrC
   sta level_thrC
   iny
-  lda LevelParams,y
+  lda LevelParams,y        ; [4] thrD
   sta level_thrD
   iny
-  lda LevelParams,y
+  lda LevelParams,y        ; [5] thrE
   sta level_thrE
   iny
-  lda LevelParams,y
+  lda LevelParams,y        ; [6] boss_lo
   sta boss_time_lo
   iny
-  lda LevelParams,y
+  lda LevelParams,y        ; [7] boss_hi
   sta boss_time_hi
+  iny
+
+  ; --- new 4 knobs ---
+  lda LevelParams,y        ; [8] ene_cd
+  sta level_enemy_cd
+  sta enemy_cd
+  iny
+
+  lda LevelParams,y        ; [9] catch_cd4 (units of 4 frames)
+  sta level_catch_cd4
+  iny
+
+  lda LevelParams,y        ; [10] good_thr
+  sta level_catch_good_thr
+  iny
+
+  lda LevelParams,y        ; [11] catch_cap
+  sta level_catch_cap
+
+  ; scale catch_cd4 -> catch_cd in frames (min 1 step => 4 frames)
+  lda level_catch_cd4
+  bne :+
+    lda #$01
+:
+  asl                      ; *2
+  asl                      ; *4
+  sta catch_cd
 
   ; reset boss timer = boss_time
   lda boss_time_lo
@@ -2832,6 +4321,7 @@ LoadLevelParams:
   sta boss_timer_hi
 
   rts
+
 
 
 
@@ -2863,9 +4353,10 @@ PlayUpdate:
   rts
 
 @start_boss:
+  ; Enter boss phase: set state, flash, clear actors, init boss, show HP bar.
   lda #STATE_BOSS
   sta game_state
-    lda #$12
+    lda #FLASH_BOSS_START_FR
   sta screen_flash_timer
 
   jsr ClearActors
@@ -2873,8 +4364,9 @@ PlayUpdate:
   rts
 
 NextLevel:
-  lda #$01
+  lda #FLAG_SET
   sta boss_hp_clear_pending
+
 
   inc level_idx
   jsr LoadLevelParams
@@ -2885,13 +4377,11 @@ NextLevel:
   rts
 
 
-
-  ; ----------------------------
+; ------------------------------------------------------------
 ; DrawLevelBannerSprites
-; Draws "LEVEL X" using sprites starting at BANNER_OAM
-; Uses: tmp_xcur, tmp0
-; Assumes: digits tiles start at DIGIT_TILE_BASE
-; ----------------------------
+; - Draws “LEVEL N” where N is 1..99 (works fine for 1..12)
+; - Digits are tiles DIGIT_TILE_BASE + 0..9
+; ------------------------------------------------------------
 DrawLevelBannerSprites:
   ldx #BANNER_OAM
 
@@ -2901,19 +4391,15 @@ DrawLevelBannerSprites:
   ; L
   lda #TILE_L
   jsr _DrawBannerChar
-
-  ; E  (you already have TILE_E = $1D)
-  lda #TILE_E
-  jsr _DrawBannerChar
-
-  ; V  (you already have TILE_V = $1F)
-  lda #TILE_V
-  jsr _DrawBannerChar
-
   ; E
   lda #TILE_E
   jsr _DrawBannerChar
-
+  ; V
+  lda #TILE_V
+  jsr _DrawBannerChar
+  ; E
+  lda #TILE_E
+  jsr _DrawBannerChar
   ; L
   lda #TILE_L
   jsr _DrawBannerChar
@@ -2924,19 +4410,42 @@ DrawLevelBannerSprites:
   adc #$08
   sta tmp_xcur
 
-  ; X digit = (level_idx + 1), clamped 1..9 for now
+  ; ----------------------------
+  ; level_num = level_idx + 1
+  ; ----------------------------
   lda level_idx
   clc
   adc #$01
+  sta tmp0            ; tmp0 = level number (1..)
+
+  ; if tmp0 < 10 => draw one digit
+  lda tmp0
   cmp #$0A
-  bcc :+
-    lda #$09
-:
+  bcc @one_digit
+
+  ; else: draw tens digit (for 10..19, tens is '1')
+  lda #$01
   clc
   adc #DIGIT_TILE_BASE
   jsr _DrawBannerChar
 
+  ; ones = tmp0 - 10  (0..9)
+  lda tmp0
+  sec
+  sbc #$0A
+  clc
+  adc #DIGIT_TILE_BASE
+  jsr _DrawBannerChar
   rts
+
+@one_digit:
+  lda tmp0
+  clc
+  adc #DIGIT_TILE_BASE
+  jsr _DrawBannerChar
+  rts
+
+
 
 ; A = tile id, X = OAM offset, tmp_xcur = screen X cursor
 _DrawBannerChar:
@@ -2959,6 +4468,7 @@ _DrawBannerChar:
   adc #$08
   sta tmp_xcur
   rts
+
 
 
 ; A = 0 => hide (write blanks)
@@ -2996,12 +4506,8 @@ WriteTitleStarfallBG:
   bne @bloop
 
 @done:
-  ; reset scroll latch
-  lda PPUSTATUS
-  lda #$00
-  sta PPUSCROLL
-  sta PPUSCROLL
-  rts
+
+rts
 
 ; A = 0 => hide (write blanks)
 ; A = 1 => show (write GameOverTiles)
@@ -3037,11 +4543,7 @@ WriteGameOverBG:
   bne @bloop
 
 @done:
-  lda PPUSTATUS
-  lda #$00
-  sta PPUSCROLL
-  sta PPUSCROLL
-  rts
+rts
 
 
 
@@ -3080,27 +4582,26 @@ WritePressStartBG:
   bne @bloop
 
 @done:
-  ; good hygiene: reset scroll latch (prevents weirdness later)
-  lda PPUSTATUS
-  lda #$00
-  sta PPUSCROLL
-  sta PPUSCROLL
-  rts
+rts
 
 
+; ------------------------------------------------------------
+; ReseedRNG
+; - Initializes rng_hi:rng_lo to a non-zero value
+; - Called on title->start and occasionally for safety
+; ------------------------------------------------------------
 ReseedRNG:
   lda rng_lo
   eor frame_lo
-  eor pad1
+  eor pad1_new      ; include edge, not held
   ora #$01
   sta rng_lo
 
   lda rng_hi
   eor frame_hi
-  eor pad1_prev
+  eor pad1
   sta rng_hi
 
-  ; ensure nonzero state
   lda rng_lo
   ora rng_hi
   bne :+
@@ -3111,8 +4612,13 @@ ReseedRNG:
 :
   rts
 
+
 ; ClearOAMShadow
 ; sets Y=$FE for all 64 sprites in OAM_BUF
+; ------------------------------------------------------------
+; ClearOAMShadow
+; - Fills OAM_BUF with Y=$FE (hidden) to start from a clean slate
+; ------------------------------------------------------------
 ClearOAMShadow:
   ldx #$00
 @loop:
@@ -3150,6 +4656,21 @@ HUD_MarkDirty:
   sta hud_dirty
   rts
 
+; ============================================================
+; HUD (BG TILE UI)
+;
+; Flow:
+;   - Gameplay sets hud_dirty=1 whenever score/lives changes.
+;   - NMI calls HUD_NMI_Update when hud_dirty is set.
+;   - HUD_NMI_Update writes digits + hearts into the HUD nametable region.
+; ============================================================
+
+; ------------------------------------------------------------
+; HUD_NMI_Update (VBlank)
+; - Writes HUD text + digits + hearts as BG tiles
+; - Runs only when hud_dirty=1
+; - Always resets scroll latch after VRAM writes
+; ------------------------------------------------------------
 HUD_NMI_Update:
   lda hud_dirty
   bne :+
@@ -3242,52 +4763,70 @@ HUD_NMI_Update:
   adc #DIGIT_TILE_BASE
   sta PPUDATA
 
-  ; ---------- write lives hearts (3) ----------
+   ; ---------- write lives hearts (HUD_MAX_LIVES) with spaces ----------
   lda PPUSTATUS
   lda #HUD_NT_HI
   sta PPUADDR
   lda #HUD_LIVES_LO
   sta PPUADDR
 
-  ; heart 1
   lda lives
-  cmp #$01
-  bcc @h0_blank
-  lda #HEART_TILE
-  bne @h0_write
-@h0_blank:
-  lda #$00
-@h0_write:
-  sta PPUDATA
+  cmp #HUD_MAX_LIVES
+  bcc :+
+    lda #HUD_MAX_LIVES
+:
+  sta tmp0
 
-  ; heart 2
-  lda lives
-  cmp #$02
-  bcc @h1_blank
-  lda #HEART_TILE
-  bne @h1_write
-@h1_blank:
-  lda #$00
-@h1_write:
-  sta PPUDATA
 
-  ; heart 3
-  lda lives
-  cmp #$03
-  bcc @h2_blank
-  lda #HEART_TILE
-  bne @h2_write
-@h2_blank:
-  lda #$00
-@h2_write:
-  sta PPUDATA
+  ldx #$00              ; X = heart index (0..HUD_MAX_LIVES-1)
+@heart_loop:
+  cpx #HUD_MAX_LIVES
+  bcs @hearts_done
 
-  ; reset scroll latch
-  lda PPUSTATUS
+  ; if (lives > X) draw heart else blank
+  lda tmp0              ; A = lives
+  cmp #$01              ; (optional micro-guard; can remove)
+  ; not needed, keep going
+
+  lda tmp0
+  cpx tmp0              ; can't compare X to mem directly on 6502, so do it this way:
+  ; ---- do: A=lives; compare to (X+1) ----
+  ; We'll compute (X+1) in A2:
+  ; (Simpler approach below)
+
+  ; --- simpler: compute (X+1) into A and compare lives ---
+  txa
+  clc
+  adc #$01              ; A = X+1
+  sta tmp1              ; tmp1 = X+1
+
+  lda tmp0              ; A = lives
+  cmp tmp1              ; lives >= (X+1) ?
+  bcc @blank
+
+  lda #HEART_TILE
+  bne @write
+
+@blank:
   lda #$00
-  sta PPUSCROLL
-  sta PPUSCROLL
-  rts
+
+@write:
+  sta PPUDATA           ; write heart/blank
+
+  ; space after each heart except the last
+  inx
+  cpx #HUD_MAX_LIVES
+  beq @heart_loop       ; last one: no trailing space
+
+  lda #$00
+  sta PPUDATA
+  jmp @heart_loop
+
+@hearts_done:
+  ; continue HUD_NMI_Update...
+
+rts
+
 
 
 UpdateHighScoreIfNeeded:
@@ -3333,29 +4872,55 @@ UpdateHighScoreIfNeeded:
 @no:
   rts
 
-  BossSpawn:
-  lda #$01
+
+
+
+; ------------------------------------------------------------
+; BossSpawn
+; - initializes boss fight state (boss + boss bullets)
+; ------------------------------------------------------------
+BossSpawn:
+  jsr ClearBossBullets
+
+  lda #$00
+  sta boss_pattern
+
+  lda #$00
+  sta boss_pattern   ; start with single shots
+
+  lda #FLAG_SET
   sta boss_alive
 
-  lda #$78          ; center-ish
+  lda #BOSS_DX_INIT
+  sta boss_dx
+  lda #BOSS_DY_INIT
+  sta boss_dy
+
+  lda #BOSS_X_INIT
   sta boss_x
-  lda #$30          ; near top
+  lda #BOSS_Y_INIT
   sta boss_y
 
-  lda #$10          ; HP (16) for testing
+  lda #BOSS_HP_INIT
   sta boss_hp
   sta boss_hp_max
 
-  lda #$01
+  lda #FLAG_SET
   sta boss_hp_dirty
-
-  lda #$00
+  lda #FLAG_CLEAR
   sta boss_flash
 
-  lda #$20          ; shoot every ~32 frames (tweak)
+  lda #BOSS_FIRE_CD_FR
   sta boss_fire_cd
+
   rts
 
+
+; ------------------------------------------------------------
+; DrawBossSprites
+; - Draws boss as a 2x2 metasprite (4 hardware sprites)
+; - Assumes boss_x/boss_y are top-left
+; ------------------------------------------------------------
 DrawBossSprites:
   lda boss_alive
   bne :+
@@ -3447,6 +5012,71 @@ DrawBossSprites:
 
   rts
 
+; ============================================================
+; BOSS SYSTEM
+;
+; Boss phase entry:
+;   - Timer counts down in PLAY; when it hits 0, @start_boss sets STATE_BOSS.
+;   - Boss HP (boss_hp) is tracked in RAM.
+;
+; Boss HP bar (BG tiles):
+;   - Main loop sets boss_hp_dirty=1 when HP changes.
+;   - NMI consumes boss_hp_dirty and calls WriteBossHPBarBG.
+;   - When the boss ends, set boss_hp_clear_pending=1 so NMI clears the bar once.
+; ============================================================
+
+; ------------------------------------------------------------
+; DrawBossBullets_Fixed
+; - draws boss bullets into fixed OAM slots (sprites #56-59)
+; - ignores dynamic Y cursor issues
+; ------------------------------------------------------------
+DrawBossBullets_Fixed:
+  ldy #$E0        ; sprite #56 (56*4)
+
+  ldx #$00
+@loop:
+  cpx #BOSS_BULLET_MAX
+  bcs @done
+
+  lda bossbul_alive,x
+  beq @hide
+
+  lda bossbul_y,x
+  sta OAM_BUF,y
+  iny
+
+  lda #$05              ; tile
+  sta OAM_BUF,y
+  iny
+
+  lda #$00              ; TEMP: palette 0
+  sta OAM_BUF,y
+  iny
+
+  lda bossbul_x,x
+  sta OAM_BUF,y
+  iny
+  jmp @next
+
+@hide:
+  lda #$FE
+  sta OAM_BUF,y
+  iny
+  iny
+  iny
+  iny
+
+@next:
+  inx
+  bne @loop
+@done:
+  rts
+
+; ------------------------------------------------------------
+; BossUpdate
+; - Placeholder boss movement + firing cadence
+; - Decrements boss_flash timer
+; ------------------------------------------------------------
 BossUpdate:
   lda boss_alive
   bne :+
@@ -3459,26 +5089,474 @@ BossUpdate:
   dec boss_flash
 :
 
-  ; simple drift left/right (placeholder)
+  ; movement (example: every other frame)
   lda frame_lo
   and #$01
-  bne @shoot
-  inc boss_x
+  bne @fire
+  jsr BossMoveBounceX
+  ; jsr BossMoveBounceY   ; enable if you want vertical bounce too
 
-@shoot:
-  ; fire cadence
   lda boss_fire_cd
-  beq @do_fire
+  beq @fire
   dec boss_fire_cd
-  rts
+  jmp @after_fire
 
-@do_fire:
-  lda #$20
+@fire:
+  jsr BossFirePattern
+
+  ; reload cooldown based on pattern (optional)
+  lda boss_pattern
+  beq :+
+    lda #20          ; faster/harder in phase 2
+    bne @set_cd
+:
+  lda #30            ; phase 1 slower
+@set_cd:
   sta boss_fire_cd
 
-  ; (optional) spawn a boss bullet here later
+@after_fire:
+
+
+
+
+
+
+; ----------------------------
+; BossMoveBounceX
+; boss_x += boss_dx (signed)
+; bounce at BOSS_MIN_X..BOSS_MAX_X
+; ----------------------------
+BossMoveBounceX:
+  lda boss_x
+  clc
+  adc boss_dx
+  sta boss_x
+
+  ; if boss_x < MIN => clamp + flip dx
+  lda boss_x
+  cmp #BOSS_MIN_X
+  bcs @check_max_x
+
+  lda #BOSS_MIN_X
+  sta boss_x
+  jsr BossFlipDX
+  jmp @done_x
+
+@check_max_x:
+  lda boss_x
+  cmp #BOSS_MAX_X
+  bcc @done_x
+
+  lda #BOSS_MAX_X
+  sta boss_x
+  jsr BossFlipDX
+
+@done_x:
   rts
 
+; ----------------------------
+; BossMoveBounceY
+; boss_y += boss_dy (signed)
+; bounce at BOSS_MIN_Y..BOSS_MAX_Y
+; ----------------------------
+BossMoveBounceY:
+  lda boss_y
+  clc
+  adc boss_dy
+  sta boss_y
+
+  lda boss_y
+  cmp #BOSS_MIN_Y
+  bcs @check_max_y
+
+  lda #BOSS_MIN_Y
+  sta boss_y
+  jsr BossFlipDY
+  jmp @done_y
+
+@check_max_y:
+  lda boss_y
+  cmp #BOSS_MAX_Y
+  bcc @done_y
+
+  lda #BOSS_MAX_Y
+  sta boss_y
+  jsr BossFlipDY
+
+@done_y:
+  rts
+
+; ----------------------------
+; BossFlipDX / BossFlipDY
+; dx = -dx (two’s complement)
+; ----------------------------
+BossFlipDX:
+  lda boss_dx
+  eor #$FF
+  clc
+  adc #$01
+  sta boss_dx
+  rts
+
+BossFlipDY:
+  lda boss_dy
+  eor #$FF
+  clc
+  adc #$01
+  sta boss_dy
+  rts
+
+; ------------------------------------------------------------
+; BossFireBullet
+; - finds a free boss bullet slot
+; - spawns at boss center, moving downward
+; ------------------------------------------------------------
+BossFireBullet:
+  ldx #$00
+@find:
+  cpx #BOSS_BULLET_MAX
+  bcs @no_slot
+  lda bossbul_alive,x
+  beq @use
+  inx
+  bne @find
+
+@use:
+  lda #FLAG_SET
+  sta bossbul_alive,x
+
+  ; X = boss_x + center offset
+  lda boss_x
+  clc
+  adc #BOSS_BULLET_X_OFF
+  sta bossbul_x,x
+
+  ; Y = boss_y + spawn offset
+  lda boss_y
+  clc
+  adc #BOSS_BULLET_SPAWN_Y
+  sta bossbul_y,x
+  sta bossbul_y_prev,x
+
+  ; >>> ADD THIS RIGHT HERE <<<
+  lda #$00
+  sta bossbul_dx,x      ; dx = 0
+  lda #$02
+  sta bossbul_dy,x      ; dy = 2
+
+@no_slot:
+  rts
+
+; ------------------------------------------------------------
+; BossFirePattern
+; - fires based on boss_pattern
+;   0 = Single
+;   1 = Spread3
+;   2 = Aimed3   (optional / future)
+; ------------------------------------------------------------
+BossFirePattern:
+  lda boss_pattern
+  beq @single
+
+  cmp #$01
+  beq @spread3
+
+  ; default (or #$02)
+@aimed3:
+  jsr BossFire_Aimed3
+  rts
+
+@spread3:
+  jsr BossFire_Spread3
+  rts
+
+@single:
+  jsr BossFire_Single
+  rts
+
+
+; ------------------------------------------------------------
+; UpdateBossBullets
+; - Moves boss bullets downward
+; - Tracks previous Y for swept collision
+; - Kills bullets that leave the bottom
+; ------------------------------------------------------------
+UpdateBossBullets:
+  ldx #$00
+@loop:
+  cpx #BOSS_BULLET_MAX
+  bcs @done
+
+  lda bossbul_alive,x
+  beq @next
+
+  ; prev Y
+  lda bossbul_y,x
+  sta bossbul_y_prev,x
+
+  ; X += dx (signed)
+  lda bossbul_x,x
+  clc
+  adc bossbul_dx,x
+  sta bossbul_x,x
+
+  ; ---- kill if off left/right (prevent wraparound) ----
+  lda bossbul_x,x
+  cmp #$08
+  bcc @kill
+  cmp #$F8
+  bcs @kill
+
+  ; Y += dy
+  lda bossbul_y,x
+  clc
+  adc bossbul_dy,x
+  sta bossbul_y,x
+
+  ; kill if off bottom
+  cmp #BOSS_BULLET_KILL_Y
+  bcc @next
+
+@kill:
+  lda #FLAG_CLEAR
+  sta bossbul_alive,x
+  jmp @next
+
+
+@next:
+  inx
+  bne @loop
+@done:
+  rts
+
+BossSpawnBullet:
+  ldx #$00
+@find:
+  cpx #BOSS_BULLET_MAX
+  bcs @no_slot
+  lda bossbul_alive,x
+  beq @use
+  inx
+  bne @find
+
+@use:
+  lda #FLAG_SET
+  sta bossbul_alive,x
+
+  lda tmp0
+  sta bossbul_x,x
+  lda tmp1
+  sta bossbul_y,x
+  sta bossbul_y_prev,x
+
+  lda tmp2
+  sta bossbul_dx,x
+  lda tmp3
+  sta bossbul_dy,x
+
+@no_slot:
+  rts
+
+BossFire_Single:
+  ; X = boss_x + center
+  lda boss_x
+  clc
+  adc #BOSS_BULLET_X_OFF
+  sta tmp0
+
+  lda boss_y
+  clc
+  adc #BOSS_BULLET_Y_OFF
+  sta tmp1
+
+  lda #$00
+  sta tmp2          ; dx = 0
+  lda #$02
+  sta tmp3          ; dy = 2
+
+  jsr BossSpawnBullet
+  rts
+
+BossFire_Spread3:
+  lda boss_x
+  clc
+  adc #BOSS_BULLET_X_OFF
+  sta tmp0
+
+  lda boss_y
+  clc
+  adc #BOSS_BULLET_Y_OFF
+  sta tmp1
+
+  lda #$02
+  sta tmp3          ; dy = 2
+
+  ; left: dx = $FF (-1)
+  lda #$FF
+  sta tmp2
+  jsr BossSpawnBullet
+
+  ; mid: dx = 0
+  lda #$00
+  sta tmp2
+  jsr BossSpawnBullet
+
+  ; right: dx = +1
+  lda #$01
+  sta tmp2
+  jsr BossSpawnBullet
+
+  rts
+
+BossFire_Aimed3:
+  ; base spawn pos
+  lda boss_x
+  clc
+  adc #BOSS_BULLET_X_OFF
+  sta tmp0
+
+  lda boss_y
+  clc
+  adc #BOSS_BULLET_Y_OFF
+  sta tmp1
+
+  lda #$02
+  sta tmp3          ; dy = 2
+
+  ; dx = sign(player_x - boss_x) in {-1,0,+1}
+  lda player_x
+  sec
+  sbc boss_x
+  beq @dx0
+  bcc @dx_neg
+
+@dx_pos:
+  lda #$01
+  bne @dx_set
+@dx_neg:
+  lda #$FF
+  bne @dx_set
+@dx0:
+  lda #$00
+@dx_set:
+  sta tmp2
+
+  jsr BossSpawnBullet
+  rts
+
+
+; ------------------------------------------------------------
+; CheckPlayerHitByBossBullets
+; - if invuln_timer > 0, skip
+; - checks each live boss bullet vs player box
+; - on hit: kill bullet, apply damage (your existing HIT path)
+; ------------------------------------------------------------
+CheckPlayerHitByBossBullets:
+  lda invuln_timer
+  bne @done
+
+  ldx #$00
+@loop:
+  cpx #BOSS_BULLET_MAX
+  bcs @done
+
+  lda bossbul_alive,x
+  beq @next
+
+  ; ----------------------------
+  ; SANITY: ignore bullets offscreen / garbage Y
+  ; ----------------------------
+  lda bossbul_y,x
+  cmp #$08
+  bcc @next                 ; too high
+  cmp #BOSS_BULLET_KILL_Y
+  bcs @next                 ; too low / already past kill line
+
+  lda bossbul_x,x
+  cmp #$08
+  bcc @next
+  cmp #$F8
+  bcs @next
+
+  ; ----------------------------
+  ; X overlap (coarse 16x16 player vs 8x8 bullet)
+  ; ----------------------------
+  lda bossbul_x,x
+  sec
+  sbc player_x
+  cmp #$10
+  bcs @next
+
+  ; ----------------------------
+  ; Y overlap
+  ; ----------------------------
+  lda bossbul_y,x
+  sec
+  sbc player_y
+  cmp #$10
+  bcs @next
+
+  ; HIT
+  lda #FLAG_CLEAR
+  sta bossbul_alive,x
+
+  jsr PlayerTakeHit
+  rts                       ; one hit per frame
+
+@next:
+  inx
+  bne @loop
+
+@done:
+  rts
+
+
+; ------------------------------------------------------------
+; DrawBossBullets
+; - emits 1 sprite per live boss bullet
+; - expects: Y = OAM write cursor
+; - returns: Y advanced
+; ------------------------------------------------------------
+DrawBossBullets:
+  ldx #$00
+@loop:
+  cpx #BOSS_BULLET_MAX
+  bcs @done
+
+  lda bossbul_alive,x
+  beq @next
+
+  ; OAM safety: need 4 bytes
+  cpy #$FC
+  bcs @done
+
+  lda bossbul_y,x
+  sta OAM_BUF,y
+  iny
+
+  lda #BOSS_BULLET_TILE
+  sta OAM_BUF,y
+  iny
+
+  lda #BOSS_BULLET_ATTR
+  sta OAM_BUF,y
+  iny
+
+  lda bossbul_x,x
+  sta OAM_BUF,y
+  iny
+
+@next:
+  inx
+  bne @loop
+@done:
+  rts
+
+; ------------------------------------------------------------
+; CollideBulletsBoss
+; - Bullet vs boss AABB (16x16)
+; - On boss death: clears bar + clears actors/bullets + advances level
+; ------------------------------------------------------------
 CollideBulletsBoss:
   lda boss_alive
   bne :+
@@ -3513,10 +5591,10 @@ CollideBulletsBoss:
   bcs @next_b
 
   ; HIT!
-  lda #$00
+  lda #FLAG_CLEAR
   sta bul_alive,x
 
-  lda #$08
+  lda #BOSS_HIT_FLASH_FR
   sta boss_flash
 
   lda boss_hp
@@ -3524,19 +5602,39 @@ CollideBulletsBoss:
   sec
   sbc #$01
   sta boss_hp
-  lda #$01
+
+  ; ---- PHASE CHANGE: if boss_hp * 2 < boss_hp_max ----
+  lda boss_pattern
+  bne :+                ; already switched? skip
+    lda boss_hp
+    asl
+    cmp boss_hp_max
+    bcs :+
+      lda #$01
+      sta boss_pattern
+:
+
+  lda #FLAG_SET
   sta boss_hp_dirty
 
   lda boss_hp
   bne @next_b
 
   ; boss dead
-  lda #$00
+  lda #FLAG_CLEAR
   sta boss_alive
 
-  jsr BossClearHPBarBG_Once   ; optional (see below)
-  jsr NextLevel               ; go to next banner/level
+  lda #FLAG_SET
+  sta boss_hp_clear_pending   ; let NMI clear the bar once
+
+  jsr ClearBossBullets
+  jsr ClearPlayerBullets
+  jsr ClearActors             ; optional but recommended
+
+  jsr NextLevel
   rts
+
+
 
 @next_b:
   inx
@@ -3545,29 +5643,72 @@ CollideBulletsBoss:
 @done:
   rts
 
+; ------------------------------------------------------------
+; ClearBossBullets
+; - kills all boss bullets (sets alive = 0)
+; ------------------------------------------------------------
+ClearBossBullets:
+  ldx #$00
+@loop:
+  cpx #BOSS_BULLET_MAX
+  bcs @done
+
+  lda #$00
+  sta bossbul_alive,x
+
+  inx
+  jmp @loop
+
+@done:
+  rts
+
+; ------------------------------------------------------------
+; ClearPlayerBullets
+; - kills all player bullets
+; ------------------------------------------------------------
+ClearPlayerBullets:
+  ldx #$00
+@loop:
+  cpx #BULLET_MAX
+  bcs @done
+
+  lda #$00
+  sta bul_alive,x
+
+  inx
+  jmp @loop
+
+@done:
+  rts
+
+
+; ------------------------------------------------------------
+; ClearBossHPBG (VBlank)
+; - Writes blank tiles over the boss HP bar region
+; - Called from NMI when boss_hp_clear_pending=1
+; ------------------------------------------------------------
 ClearBossHPBG:
   lda PPUSTATUS
-  lda #BOSS_HP_NT_HI
+  lda #BOSSBAR_NT_HI
   sta PPUADDR
-  lda #BOSS_HP_NT_LO
+  lda #BOSSBAR_NT_LO
   sta PPUADDR
 
-  ldx #BOSS_HP_LEN
-  lda #$00
+  ldx #BOSSBAR_LEN
+  lda #BOSSBAR_EMPTY      ; usually $00
 @loop:
   sta PPUDATA
   dex
   bne @loop
+rts
 
-  lda PPUSTATUS
-  lda #$00
-  sta PPUSCROLL
-  sta PPUSCROLL
-  rts
-
-
-
-  WriteBossHPBarBG:
+; ------------------------------------------------------------
+; WriteBossHPBarBG (VBlank)
+; - Draws boss_hp as a row of filled/empty tiles
+; - Assumes it is called inside NMI (vblank)
+; - Leaves scroll reset to 0,0
+; ------------------------------------------------------------
+WriteBossHPBarBG:
   ; draws boss_hp as 0..BOSSBAR_LEN tiles
   ; assumes called in NMI (vblank)
   lda PPUSTATUS
@@ -3587,7 +5728,7 @@ ClearBossHPBG:
   bcc @filled
 
 @empty:
-  lda #$00
+  lda #BOSSBAR_EMPTY
   sta PPUDATA
   inx
   bne @loop
@@ -3599,20 +5740,10 @@ ClearBossHPBG:
   bne @loop
 
 @done:
-  ; reset scroll latch after VRAM writes
-  lda PPUSTATUS
-  lda #$00
-  sta PPUSCROLL
-  sta PPUSCROLL
 
   rts
 
-BossClearHPBarBG_Once:
-  lda #$00
-  sta boss_hp
-  lda #$01
-  sta boss_hp_dirty
-  rts
+
 
 HideBannerSprites:
   ldx #BANNER_OAM
@@ -3627,6 +5758,10 @@ HideBannerSprites:
   rts
 
   ; Hides the 5 score digit sprites (sprites 59..63 at OAM $EC..$FF)
+; ------------------------------------------------------------
+; HideScoreSprites
+; - Hides all score sprites by setting their Y=$FE
+; ------------------------------------------------------------
 HideScoreSprites:
   lda #$FE
   sta OAM_BUF+$EC     ; sprite 59 Y
@@ -3636,6 +5771,23 @@ HideScoreSprites:
   sta OAM_BUF+$FC     ; sprite 63 Y
   rts
 
+
+; ============================================================
+; RNG (RANDOM NUMBER GENERATION)
+;
+; Implementation:
+;   - 16-bit Galois LFSR stored in rng_hi:rng_lo
+;   - NextRand advances the LFSR and returns rng_lo in A
+;
+; Usage pattern:
+;   - NMI calls NextRand every frame to keep entropy moving,
+;     even during pauses or menus.
+;   - Gameplay code calls NextRand when a random decision is needed.
+;
+; SAFETY:
+;   - The all-zero state is invalid for an LFSR.
+;   - Code explicitly re-seeds if rng_hi|rng_lo == 0.
+; ============================================================
 
 ; ------------------------------------------------------------
 ; NextRand
@@ -3662,6 +5814,7 @@ NextRand:
 @done:
   lda rng_lo
   rts
+
 
 
 
@@ -3762,6 +5915,232 @@ DebugSpawn_DrawTestOnce:
   sta ene_y,x
 
 @out:
+  rts
+
+; ------------------------------------------------------------
+; DrawStarfieldNT0  ($2000 tile area only) 32x30 = 960 bytes
+; ------------------------------------------------------------
+; ZP temps needed:
+;   tmp0 = random byte
+;   tmp2 = row counter
+
+DrawStarfieldNT0:
+  lda PPUSTATUS
+  lda #$20
+  sta PPUADDR
+  lda #$00
+  sta PPUADDR
+
+  lda #$1E          ; 30 rows
+  sta tmp2
+
+@row:
+  ldy #$20          ; 32 columns
+@col:
+  jsr NextRand
+  sta tmp0
+
+  lda tmp0
+  and #$1F          ; 1/32 chance of star
+  bne @empty
+
+    lda tmp0
+    eor rng_hi
+    and #$03
+    tax
+    lda StarTiles,x
+    jmp @write
+
+
+
+@empty:
+  lda #$00          ; blank tile
+
+@write:
+  sta PPUDATA
+  dey
+  bne @col
+
+  dec tmp2
+  bne @row
+
+  lda PPUSTATUS
+  rts
+
+
+
+
+
+
+; ------------------------------------------------------------
+; DrawStarfieldNT1  ($2400 tile area only) 32x30 = 960 bytes
+; ------------------------------------------------------------
+DrawStarfieldNT1:
+  lda PPUSTATUS
+  lda #$24
+  sta PPUADDR
+  lda #$00
+  sta PPUADDR
+
+  lda #$1E
+  sta tmp2
+
+@row:
+  ldy #$20
+@col:
+  jsr NextRand
+  sta tmp0
+
+  lda tmp0
+  and #$1F
+  bne @empty
+
+    lda tmp0
+    and #$03
+    tax
+    lda StarTiles,x
+    jmp @write
+
+@empty:
+  lda #$00
+
+@write:
+  sta PPUDATA
+  dey
+  bne @col
+
+  dec tmp2
+  bne @row
+
+  lda PPUSTATUS
+  rts
+
+; ------------------------------------------------------------
+; CollideBulletsCatch
+; - If a bullet hits a catch object:
+;     * destroy bullet
+;     * destroy catch object
+;     * jam gun (penalty)
+; - Assumes 8x8 sprites for both
+; ------------------------------------------------------------
+CollideBulletsCatch:
+  ldx #$00                    ; bullet index
+@bul_loop:
+  cpx #BULLET_MAX
+  bcs @done
+
+  lda bul_alive,x
+  beq @bul_next
+
+  ; cache bullet position in tmp0/tmp1
+  lda bul_x,x
+  sta tmp0                    ; tmp0 = bul_x
+  lda bul_y,x
+  sta tmp1                    ; tmp1 = bul_y
+
+  ldy #$00                    ; catch index
+@catch_loop:
+  cpy #CATCH_MAX
+  bcs @bul_next               ; no hit for this bullet
+
+  lda catch_alive,y
+  beq @catch_next
+
+  ; ----------------------------
+  ; X overlap: |bul_x - catch_x| < 8
+  ; ----------------------------
+  lda tmp0                    ; bul_x
+  sec
+  sbc catch_x,y               ; A = bul_x - catch_x
+  bcs @x_pos
+  eor #$FF
+  clc
+  adc #$01                    ; abs(A)
+@x_pos:
+  cmp #$08
+  bcs @catch_next             ; >= 8 => no overlap in X
+
+  ; ----------------------------
+  ; Y overlap: |bul_y - catch_y| < 8
+  ; ----------------------------
+  lda tmp1                    ; bul_y
+  sec
+  sbc catch_y,y               ; A = bul_y - catch_y
+  bcs @y_pos
+  eor #$FF
+  clc
+  adc #$01                    ; abs(A)
+@y_pos:
+  cmp #$08
+  bcs @catch_next
+
+  ; ============================
+  ; HIT!
+  ; ============================
+  lda #$00
+  sta bul_alive,x
+  sta catch_alive,y
+
+  ; ---- penalty: jam gun ----
+  lda level_jam_frames
+  sta jam_timer
+
+  lda #JAM_FR
+  sta gun_jam_timer
+  lda #$00
+  sta player_cd               ; make jam apply immediately
+  jsr SafeDecrementLives
+  jsr HUD_MarkDirty
+
+  ; done with this bullet (it’s gone)
+  jmp @bul_next
+
+@catch_next:
+  iny
+  bne @catch_loop             ; safe if CATCH_MAX < 256
+
+@bul_next:
+  inx
+  bne @bul_loop
+
+@done:
+  rts
+
+
+; ------------------------------------------------------------
+; SafeDecrementLives
+; - If lives > 0: lives -= 1
+; - If lives becomes 0: triggers game over
+; - Always marks HUD dirty
+; ------------------------------------------------------------
+SafeDecrementLives:
+  lda lives
+  beq @already_zero      ; don't underflow
+
+  sec
+  sbc #$01
+  sta lives
+
+  lda #FLAG_SET
+  sta hud_dirty          ; or hud_lives_dirty, whichever you use
+
+  lda lives
+  bne @done
+
+  ; ---- lives just hit 0 -> GAME OVER ----
+  jsr PlayerSetOver       ; (see below)
+  rts
+
+@already_zero:
+  ; If you're somehow here while still playing, force game over
+  jsr DoGameOver
+@done:
+  rts
+
+DoGameOver:
+  jsr ClearActors
+  lda #STATE_OVER
+  sta game_state
   rts
 
 
@@ -4032,5 +6411,103 @@ DebugSpawn_DrawTestOnce:
 .byte $3C,$66,$60,$60,$60,$66,$3C,$00
 .byte $3C,$66,$60,$60,$60,$66,$3C,$00
 
+; ------------------------------------
+; Star variants
+; ------------------------------------
 
-  .res 8192-704, $00
+; Tile $2C 'Dot'  (make the dot pixel BRIGHT)
+; P0 (low bit)
+.byte $00,$00,$00,$08,$00,$00,$00,$00
+; P1 (high bit)
+.byte $00,$00,$00,$08,$00,$00,$00,$00
+
+
+; Tile $2D 'plus star'  (bright center only)
+; P0
+.byte $00,$00,$08,$1C,$08,$00,$00,$00
+; P1
+.byte $00,$00,$00,$08,$00,$00,$00,$00
+
+
+; Tile $2E 'diamond'  (bright “side points” row only)
+; P0
+.byte $00,$00,$08,$14,$08,$00,$00,$00
+; P1
+.byte $00,$00,$00,$14,$00,$00,$00,$00
+
+
+; Tile $2F 'bright cross'  (bright core, dim outer arms)
+; P0
+.byte $00,$08,$08,$3E,$08,$08,$00,$00
+; P1
+.byte $00,$00,$08,$1C,$08,$00,$00,$00
+
+
+; -------------------------------------
+; Catch Objects
+; -------------------------------------
+
+; Tile $30 'core block'
+; Solid square with bright center
+.byte %00000000
+.byte %00111100
+.byte %00111100
+.byte %00111100
+.byte %00111100
+.byte %00111100
+.byte %00000000
+.byte %00000000
+
+; Bright core (center mass)
+.byte %00000000
+.byte %00000000
+.byte %00011000
+.byte %00011000
+.byte %00011000
+.byte %00000000
+.byte %00000000
+.byte %00000000
+
+; Tile $31 'Fractured Core'
+; Hollowing begins, structure remains
+.byte %00000000
+.byte %00111100
+.byte %00100010
+.byte %00101110
+.byte %00100010
+.byte %00111100
+.byte %00000000
+.byte %00000000
+
+; Brightness leaking upward
+.byte %00000000
+.byte %00011000
+.byte %00001000
+.byte %00001000
+.byte %00001000
+.byte %00000000
+.byte %00000000
+.byte %00000000
+
+; Tile $32 'Final Object'
+; Empty frame
+.byte %00000000
+.byte %00111100
+.byte %00100010
+.byte %00100010
+.byte %00100010
+.byte %00111100
+.byte %00000000
+.byte %00000000
+
+; Only the top edge remains bright
+.byte %00000000
+.byte %00111100
+.byte %00000000
+.byte %00000000
+.byte %00000000
+.byte %00000000
+.byte %00000000
+.byte %00000000
+
+  .res 8192-816, $00
