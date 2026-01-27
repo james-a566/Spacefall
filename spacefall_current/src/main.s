@@ -1,10 +1,8 @@
 ; ============================================================
-; main_.s — Starfall / Spacefall shooter (ca65)
+; main.s — Starfall / Spacefall shooter (ca65)
 ; ============================================================
 ; ============================================================
-; STABLE PLAYTEST BUILD v.2.5
-; Verified: compiles + runs on hardware/emulator
-; Do not change logic during playtesting.
+; Build 2.6 26.01.26 8:55pm
 ; ============================================================
 ; ----------------------------
 ; Audio: FamiStudio
@@ -19,6 +17,7 @@ FAMISTUDIO_CFG_SFX_STREAMS = 2   ; start with 1 stream (simpler)
 ; TOC (search these tags):
 ;   [HW]      NES regs / bits
 ;   [CONST]   Constants / tiles / states / tuning
+;   [HDR]     Header
 ;   [ZP]      Zero page
 ;   [BSS]     RAM
 ;   [RODATA]  Tables (palettes, params, strings)
@@ -42,7 +41,7 @@ FAMISTUDIO_CFG_SFX_STREAMS = 2   ; start with 1 stream (simpler)
 ; ============================================================
 
 ; ------------------------------------------------------------
-; NES hardware registers
+; [HW] NES hardware registers
 ; ------------------------------------------------------------
 
 ; ------------------------------------------------------------
@@ -74,7 +73,7 @@ BTN_RIGHT  = %00000001
 BTN_SELECT_START = (BTN_SELECT | BTN_START)
 
 ; ------------------------------------------------------------
-; Game states
+; [CONST] Game states
 ; ------------------------------------------------------------
 STATE_BANNER    = $00
 STATE_PLAY      = $01
@@ -334,8 +333,9 @@ LEVEL_STRIDE = 12
 ; ------------------------------------------------------------
 DEBUG_DRAW_TEST = 0      ; set to 0 to disable
 DEBUG_BOSS_SKIP = 1     ; set to 0 to compile out boss-skip hotkey
+
 ; ============================================================
-; ZEROPAGE — EXACT SYMBOL SET (no deletions / no renames)
+; [HDR] Header
 ; ============================================================
 
 .segment "HEADER"
@@ -369,7 +369,7 @@ DEBUG_BOSS_SKIP = 1     ; set to 0 to compile out boss-skip hotkey
                      ; Byte 11-15 Unused / Padding
 
 ; ============================================================
-; ZEROPAGE — EXACT SYMBOL SET (no deletions / no renames)
+; [ZP] ZEROPAGE — EXACT SYMBOL SET (no deletions / no renames)
 ; ============================================================
 
 .segment "ZEROPAGE"
@@ -464,7 +464,7 @@ sfxn_hold:   .res 1
 sfxn_active: .res 1
 
 ; ============================================================
-; BSS — EXACT SYMBOL SET (no deletions / no renames)
+; [BSS] BSS — EXACT SYMBOL SET (no deletions / no renames)
 ; ============================================================
 .segment "BSS"
 
@@ -1361,7 +1361,7 @@ OAM_BUF: .res 256
 .segment "CODE"
 
 ; ------------------------------------------------------------
-; RESET
+; [RESET]
 ; - Hardware init
 ; - RAM/OAM clear
 ; - Initial game state
@@ -1563,8 +1563,311 @@ InitVRAMAndUI:
   sta PPUMASK
   rts
 
+
+; ----------------------------
+; [NMI]
+; ----------------------------
+
 ; ------------------------------------------------------------
-; MainLoop
+; STABLE ZONE — NMI / vblank timing
+; Playtest build: avoid logic/timing changes here.
+; ------------------------------------------------------------
+NMI:
+  pha
+  txa
+  pha
+  tya
+  pha
+
+
+  inc frame_lo
+  bne :+
+    inc frame_hi
+:
+
+jsr NextRand
+
+; ---- OAM DMA (typical) ----
+  lda #$00
+  sta OAMADDR
+  lda #>OAM_BUF     ; high byte of the actual buffer location
+  sta OAMDMA
+
+
+; ---- TITLE BG ("STARFALL") show/hide ----
+  lda game_state
+  cmp #STATE_TITLE
+  bne @title_not_title
+
+@title_is_title:
+  lda title_visible
+  cmp #$01
+  beq @title_done
+  lda #$01
+  sta title_visible
+  lda #$01
+  jsr WriteTitleStarfallBG
+  jmp @title_done
+
+@title_not_title:
+  lda title_visible
+  beq @title_done
+  lda #$00
+  sta title_visible
+  lda #$00
+  jsr WriteTitleStarfallBG
+
+@title_done:
+
+
+    ; ---- PRESS START BG blink (TITLE only) ----
+  lda game_state
+  cmp #STATE_TITLE
+  bne @not_title
+
+  ; visible? (blink bit)
+  lda frame_lo
+  and #$10
+  beq @want_hidden
+
+@want_shown:
+  lda press_visible
+  cmp #$01
+  beq @ps_done          ; already shown
+  lda #$01
+  sta press_visible
+  lda #$01
+  jsr WritePressStartBG
+  jmp @ps_done
+
+@want_hidden:
+  lda press_visible
+  beq @ps_done          ; already hidden
+  lda #$00
+  sta press_visible
+  lda #$00
+  jsr WritePressStartBG
+  jmp @ps_done
+
+@not_title:
+  ; if we left title, ensure it's hidden once
+  lda press_visible
+  beq @ps_done
+  lda #$00
+  sta press_visible
+  lda #$00
+  jsr WritePressStartBG
+
+@ps_done:
+
+; ---- GAME OVER BG blink once on entry ----
+  lda game_state
+  cmp #STATE_OVER
+  bne @go_not_over
+
+  ; entering OVER? (start blink sequence once)
+  lda gameover_visible
+  cmp #$01
+  beq @go_in_over_cont
+
+  ; first frame we notice OVER: mark visible + start blink timer
+  lda #$01
+  sta gameover_visible
+
+  lda #$30              ; total blink duration in frames (~48)
+  sta gameover_blink_timer
+  lda #$01
+  sta gameover_blink_phase
+
+  ; draw it immediately
+  lda #$01
+  jsr WriteGameOverBG
+  jmp @go_done
+
+
+@go_in_over_cont:
+  ; if we're blinking, update show/hide based on timer
+  lda gameover_blink_phase
+  beq @go_done          ; blink already finished => leave steady
+
+  lda gameover_blink_timer
+  beq @go_finish_blink
+  dec gameover_blink_timer
+
+  ; timer ranges:
+  ; $30..$11 => shown
+  ; $10..$01 => hidden
+  lda gameover_blink_timer
+  cmp #$11
+  bcs @go_want_shown
+
+@go_want_hidden:
+  lda #$00
+  jsr WriteGameOverBG
+  jmp @go_done
+
+@go_want_shown:
+  lda #$01
+  jsr WriteGameOverBG
+  jmp @go_done
+
+@go_finish_blink:
+  lda #$00
+  sta gameover_blink_phase
+  lda #$01
+  jsr WriteGameOverBG
+  jmp @go_done
+
+
+@go_not_over:
+  ; leaving OVER: ensure hidden + reset blink state
+  lda gameover_visible
+  beq @go_done
+
+  lda #$00
+  sta gameover_visible
+  sta gameover_blink_phase
+  sta gameover_blink_timer
+
+  lda #$00
+  jsr WriteGameOverBG
+
+
+@go_done:
+
+  ; --------------------------------------------
+  ; Tutorial timer (auto-hide)
+  ; --------------------------------------------
+  lda tutorial_timer
+  beq @tut_timer_done
+
+  dec tutorial_timer
+  bne @tut_timer_done
+
+  ; timer just hit 0 -> request clear once
+  lda #$00
+  sta tutorial_visible
+  lda #$01
+  sta tutorial_dirty
+
+@tut_timer_done:
+
+  ; --------------------------------------------
+  ; Tutorial BG draw/clear (one-shot)
+  ; --------------------------------------------
+  lda tutorial_dirty
+  beq @tut_done
+
+  lda #$00
+  sta tutorial_dirty
+
+  lda tutorial_visible
+  beq @tut_clear
+
+@tut_draw:
+  jsr DrawTutorialBG
+  jmp @tut_done
+
+@tut_clear:
+  jsr ClearTutorialBG
+
+@tut_done:
+
+
+
+  lda screen_flash_timer      ; screen_flash_timer: nonzero => temporarily force palette/brightness effect
+  beq @flash_off
+
+  dec screen_flash_timer
+
+; grayscale while timer >= FLASH_GRAY_CUTOFF
+  lda screen_flash_timer
+  cmp #FLASH_GRAY_CUTOFF
+  bcs @flash_gray
+
+@flash_normal:
+  lda #PPUMASK_BG_SPR
+  sta PPUMASK
+  jmp @flash_done
+
+@flash_gray:
+  lda #PPUMASK_BG_SPR
+  ora #%00000001      ; grayscale
+  sta PPUMASK
+  jmp @flash_done
+
+@flash_off:
+  lda #PPUMASK_BG_SPR
+  sta PPUMASK
+
+@flash_done:
+
+
+
+
+    jsr Pause_NMI_Update
+
+  jsr HUD_NMI_Update
+
+  lda game_state
+  cmp #STATE_BOSS
+  bne :+
+
+    lda boss_alive
+    beq :+
+
+    lda boss_hp_dirty
+    beq :+
+      lda #$00
+      sta boss_hp_dirty
+      jsr WriteBossHPBarBG
+:
+
+
+  lda boss_hp_clear_pending
+  beq @boss_hp_clear_done
+
+  lda #FLAG_CLEAR
+  sta boss_hp_clear_pending
+
+
+  jsr ClearBossHPBG          ; writes blanks to the boss HP bar area
+
+@boss_hp_clear_done:
+
+
+
+  pla
+  tay
+  pla
+  tax
+  pla
+
+    ; --- hard reset scroll every frame ---
+  lda PPUSTATUS      ; reset latch
+  lda #$00
+  sta PPUSCROLL      ; X = 0
+  sta PPUSCROLL      ; Y = 0
+
+  ; ensure base nametable is $2000 (optional but recommended)
+  lda #%10000000     ; NMI on, nametable 0
+  sta PPUCTRL
+
+
+
+; now tell the main loop the frame is ready
+lda #$01
+sta nmi_ready
+
+  rti
+
+
+IRQ:
+  rti
+
+
+; ------------------------------------------------------------
+; [MAIN]
 ; ------------------------------------------------------------
 ; MainLoop
 ; - Frame sync via WaitFrame
@@ -1921,306 +2224,10 @@ jsr famistudio_music_stop
   jmp MainLoop
 
 
-; ----------------------------
-; NMI
-; ----------------------------
-
-; ------------------------------------------------------------
-; STABLE ZONE — NMI / vblank timing
-; Playtest build: avoid logic/timing changes here.
-; ------------------------------------------------------------
-NMI:
-  pha
-  txa
-  pha
-  tya
-  pha
-
-
-  inc frame_lo
-  bne :+
-    inc frame_hi
-:
-
-jsr NextRand
-
-; ---- OAM DMA (typical) ----
-  lda #$00
-  sta OAMADDR
-  lda #>OAM_BUF     ; high byte of the actual buffer location
-  sta OAMDMA
-
-
-; ---- TITLE BG ("STARFALL") show/hide ----
-  lda game_state
-  cmp #STATE_TITLE
-  bne @title_not_title
-
-@title_is_title:
-  lda title_visible
-  cmp #$01
-  beq @title_done
-  lda #$01
-  sta title_visible
-  lda #$01
-  jsr WriteTitleStarfallBG
-  jmp @title_done
-
-@title_not_title:
-  lda title_visible
-  beq @title_done
-  lda #$00
-  sta title_visible
-  lda #$00
-  jsr WriteTitleStarfallBG
-
-@title_done:
-
-
-    ; ---- PRESS START BG blink (TITLE only) ----
-  lda game_state
-  cmp #STATE_TITLE
-  bne @not_title
-
-  ; visible? (blink bit)
-  lda frame_lo
-  and #$10
-  beq @want_hidden
-
-@want_shown:
-  lda press_visible
-  cmp #$01
-  beq @ps_done          ; already shown
-  lda #$01
-  sta press_visible
-  lda #$01
-  jsr WritePressStartBG
-  jmp @ps_done
-
-@want_hidden:
-  lda press_visible
-  beq @ps_done          ; already hidden
-  lda #$00
-  sta press_visible
-  lda #$00
-  jsr WritePressStartBG
-  jmp @ps_done
-
-@not_title:
-  ; if we left title, ensure it's hidden once
-  lda press_visible
-  beq @ps_done
-  lda #$00
-  sta press_visible
-  lda #$00
-  jsr WritePressStartBG
-
-@ps_done:
-
-; ---- GAME OVER BG blink once on entry ----
-  lda game_state
-  cmp #STATE_OVER
-  bne @go_not_over
-
-  ; entering OVER? (start blink sequence once)
-  lda gameover_visible
-  cmp #$01
-  beq @go_in_over_cont
-
-  ; first frame we notice OVER: mark visible + start blink timer
-  lda #$01
-  sta gameover_visible
-
-  lda #$30              ; total blink duration in frames (~48)
-  sta gameover_blink_timer
-  lda #$01
-  sta gameover_blink_phase
-
-  ; draw it immediately
-  lda #$01
-  jsr WriteGameOverBG
-  jmp @go_done
-
-
-@go_in_over_cont:
-  ; if we're blinking, update show/hide based on timer
-  lda gameover_blink_phase
-  beq @go_done          ; blink already finished => leave steady
-
-  lda gameover_blink_timer
-  beq @go_finish_blink
-  dec gameover_blink_timer
-
-  ; timer ranges:
-  ; $30..$11 => shown
-  ; $10..$01 => hidden
-  lda gameover_blink_timer
-  cmp #$11
-  bcs @go_want_shown
-
-@go_want_hidden:
-  lda #$00
-  jsr WriteGameOverBG
-  jmp @go_done
-
-@go_want_shown:
-  lda #$01
-  jsr WriteGameOverBG
-  jmp @go_done
-
-@go_finish_blink:
-  lda #$00
-  sta gameover_blink_phase
-  lda #$01
-  jsr WriteGameOverBG
-  jmp @go_done
-
-
-@go_not_over:
-  ; leaving OVER: ensure hidden + reset blink state
-  lda gameover_visible
-  beq @go_done
-
-  lda #$00
-  sta gameover_visible
-  sta gameover_blink_phase
-  sta gameover_blink_timer
-
-  lda #$00
-  jsr WriteGameOverBG
-
-
-@go_done:
-
-  ; --------------------------------------------
-  ; Tutorial timer (auto-hide)
-  ; --------------------------------------------
-  lda tutorial_timer
-  beq @tut_timer_done
-
-  dec tutorial_timer
-  bne @tut_timer_done
-
-  ; timer just hit 0 -> request clear once
-  lda #$00
-  sta tutorial_visible
-  lda #$01
-  sta tutorial_dirty
-
-@tut_timer_done:
-
-  ; --------------------------------------------
-  ; Tutorial BG draw/clear (one-shot)
-  ; --------------------------------------------
-  lda tutorial_dirty
-  beq @tut_done
-
-  lda #$00
-  sta tutorial_dirty
-
-  lda tutorial_visible
-  beq @tut_clear
-
-@tut_draw:
-  jsr DrawTutorialBG
-  jmp @tut_done
-
-@tut_clear:
-  jsr ClearTutorialBG
-
-@tut_done:
-
-
-
-  lda screen_flash_timer      ; screen_flash_timer: nonzero => temporarily force palette/brightness effect
-  beq @flash_off
-
-  dec screen_flash_timer
-
-; grayscale while timer >= FLASH_GRAY_CUTOFF
-  lda screen_flash_timer
-  cmp #FLASH_GRAY_CUTOFF
-  bcs @flash_gray
-
-@flash_normal:
-  lda #PPUMASK_BG_SPR
-  sta PPUMASK
-  jmp @flash_done
-
-@flash_gray:
-  lda #PPUMASK_BG_SPR
-  ora #%00000001      ; grayscale
-  sta PPUMASK
-  jmp @flash_done
-
-@flash_off:
-  lda #PPUMASK_BG_SPR
-  sta PPUMASK
-
-@flash_done:
-
-
-
-
-    jsr Pause_NMI_Update
-
-  jsr HUD_NMI_Update
-
-  lda game_state
-  cmp #STATE_BOSS
-  bne :+
-
-    lda boss_alive
-    beq :+
-
-    lda boss_hp_dirty
-    beq :+
-      lda #$00
-      sta boss_hp_dirty
-      jsr WriteBossHPBarBG
-:
-
-
-  lda boss_hp_clear_pending
-  beq @boss_hp_clear_done
-
-  lda #FLAG_CLEAR
-  sta boss_hp_clear_pending
-
-
-  jsr ClearBossHPBG          ; writes blanks to the boss HP bar area
-
-@boss_hp_clear_done:
-
-
-
-  pla
-  tay
-  pla
-  tax
-  pla
-
-    ; --- hard reset scroll every frame ---
-  lda PPUSTATUS      ; reset latch
-  lda #$00
-  sta PPUSCROLL      ; X = 0
-  sta PPUSCROLL      ; Y = 0
-
-  ; ensure base nametable is $2000 (optional but recommended)
-  lda #%10000000     ; NMI on, nametable 0
-  sta PPUCTRL
-
-
-
-; now tell the main loop the frame is ready
-lda #$01
-sta nmi_ready
-
-  rti
-
-
-IRQ:
-  rti
+;=========================================================
+; [SYS] Systems 
+; (input/rng/player/bullets/enemies/boss/collisions)
+;=========================================================
 
 ; ----------------------------
 ; HELPERS
@@ -2356,6 +2363,38 @@ InitPalettes:
 
   rts
 
+  ; Top UI band on NT0: set attribute bytes 0..7 to palette 1 ($55)
+SetUIAttrsNT0:
+  lda PPUSTATUS
+  lda #$23
+  sta PPUADDR
+  lda #$C0
+  sta PPUADDR
+
+  ldx #$08
+  lda #$55        ; palette 1 everywhere in those blocks
+@loop:
+  sta PPUDATA
+  dex
+  bne @loop
+  rts
+
+; Same for NT1 (attributes at $27C0)
+SetUIAttrsNT1:
+  lda PPUSTATUS
+  lda #$27
+  sta PPUADDR
+  lda #$C0
+  sta PPUADDR
+
+  ldx #$08
+  lda #$55
+@loop:
+  sta PPUDATA
+  dex
+  bne @loop
+  rts
+
 ; ------------------------------------------------------------
 ; InitPalettes_Safe
 ; - Writes palettes but skips $3F10 (mirror of $3F00 on NES)
@@ -2403,23 +2442,6 @@ InitPalettes_Safe:
   cpx #$20
   bne @spr
 
-  rts
-
-
-
-; ------------------------------------------------------------
-; DrawTestSprite (DEBUG)
-; - Single sprite used to sanity-check OAM rendering
-; ------------------------------------------------------------
-DrawTestSprite:
-  lda #$70
-  sta OAM_BUF+0
-  lda #$00          ; tile 0 (solid)
-  sta OAM_BUF+1
-  lda #$00          ; palette 0
-  sta OAM_BUF+2
-  lda #$80
-  sta OAM_BUF+3
   rts
 
 ; ============================================================
@@ -2788,9 +2810,6 @@ UpdatePlayer:
 
 
 
-
-
-
 ; ============================================================
 ; BULLETS
 ;
@@ -2899,804 +2918,6 @@ UpdateBullets:
   bne @loop
 @done:
   rts
-
-
-
-; ----------------------------
-; BuildOAM
-; - OAM layout:
-;   sprites 0-3  = player (2x2)
-;   sprites 4-7  = bullets
-;   sprites 8..  = enemies
-; ----------------------------
-; ============================================================
-; RENDERING (SPRITES / OAM SHADOW)
-;
-; Overview:
-;   - Main loop builds an OAM shadow buffer (OAM_BUF) each frame.
-;   - NMI performs the actual OAM DMA ($4014) to upload sprites to PPU.
-;
-; Sprite slot map (by convention in this project):
-;   0..3   : player ship (2x2 metasprite = 4 hardware sprites)
-;   4..7   : bullets (up to BULLET_MAX sprites)
-;   8..??  : enemies (mix of 1x1 and 2x2 metasprites)
-;   later  : boss (2x2) + UI overlays (banner / score / game over)
-;
-; Notes:
-;   - “Hide sprite” convention: set Y=$FE in OAM to hide.
-;   - Keep OAM writes in RAM only; do not touch $2004 outside NMI/DMA.
-; ============================================================
-
-
-; ------------------------------------------------------------
-; OAM SAFETY CONSTANTS (reserved region for fixed boss bullets)
-; ------------------------------------------------------------
-OAM_DYNAMIC_LIMIT = $E0    ; bytes $E0..$EF reserved for DrawBossBullets_Fixed
-OAM_2X2_LIMIT     = $D0    ; need 16 bytes (4 sprites) before hitting $E0
-BULLET_OAM_BASE   = $10    ; sprite 4 (4*4)
-
-
-; ------------------------------------------------------------
-; OAM layout helpers (playtest-safe)
-; ------------------------------------------------------------
-;SPR_HIDE_Y        = $FE
-;BULLET_OAM_BASE   = $10
-;OAM_DYNAMIC_LIMIT = $E0   ; $E0..$EF reserved for DrawBossBullets_Fixed
-BOSS_OAM_BYTES    = 36    ; 9 sprites * 4 bytes
-BOSS_OAM_AFTER    = BOSS_OAM + BOSS_OAM_BYTES
-
-; ------------------------------------------------------------
-; BuildOAM
-; - Clears OAM shadow
-; - Draws sprites for the current game_state
-; - Does NOT do OAM DMA (NMI does that)
-; ------------------------------------------------------------
-
-; ------------------------------------------------------------
-; STABLE ZONE — Sprite build (OAM shadow)
-; Playtest build: avoid logic/timing changes here.
-; ------------------------------------------------------------
-BuildOAM:
-  jsr ClearOAMShadow
-
-  lda game_state
-  cmp #STATE_TITLE
-  bne @check_over
-
-  ; TITLE: nothing to draw (BG does the title)
-  rts
-
-@check_over:
-  lda game_state
-  cmp #STATE_OVER
-  bne @normal_draw
-
-  ; STATE_OVER: no sprites (BG handles overlays)
-  rts
-
-
-
-@normal_draw:
-
-  ; ----------------------------
-  ; Player metasprite (sprites 0-3)
-  ; ----------------------------
-  lda player_attr
-  sta tmp4
-
-  ; ---- jam flash wins ----
-  lda jam_flash_timer
-  beq @check_pickup
-  and #$03
-  beq @pattr_ready
-
-  lda player_attr
-  and #%11111100
-  ora #$01              ; palette 3 for jam (distinct)
-  sta tmp4
-  jmp @pattr_ready
-
-@check_pickup:
-  lda catch_pickup_flash
-  beq @pattr_ready
-  and #$03
-  beq @pattr_ready
-
-  lda player_attr
-  and #%11111100
-  ora #$03              ; palette 2 for pickup
-  sta tmp4
-
-@pattr_ready:
-
-
-  ; TL
-  lda player_y
-  sta OAM_BUF+0
-  lda #$01
-  sta OAM_BUF+1
-  lda tmp4
-  sta OAM_BUF+2
-  lda player_x
-  sta OAM_BUF+3
-
-  ; TR
-  lda player_y
-  sta OAM_BUF+4
-  lda #$02
-  sta OAM_BUF+5
-  lda tmp4
-  sta OAM_BUF+6
-  lda player_x
-  clc
-  adc #$08
-  sta OAM_BUF+7
-
-  ; BL
-  lda player_y
-  clc
-  adc #$08
-  sta OAM_BUF+8
-  lda #$03
-  sta OAM_BUF+9
-  lda tmp4
-  sta OAM_BUF+10
-  lda player_x
-  sta OAM_BUF+11
-
-  ; BR
-  lda player_y
-  clc
-  adc #$08
-  sta OAM_BUF+12
-  lda #$04
-  sta OAM_BUF+13
-  lda tmp4
-  sta OAM_BUF+14
-  lda player_x
-  clc
-  adc #$08
-  sta OAM_BUF+15
-
-  ; ----------------------------
-  ; Bullets (sprite start at 5 )
-  ; ----------------------------
-
-  .if DEBUG_DRAW_TEST
-  lda debug_mode        ; or your draw-test flag, whichever you use
-  ; e.g. if debug_mode != 0 and you're doing spawn-cycling, skip drawing bullets
-  bne @skip_bullets
-.endif
-
-  ; ------------------------------------------------------------
-  ; Bullet OAM start
-  ; - Normal play: bullets start at BULLET_OAM_BASE ($10)
-  ; - Boss fight: boss metasprite uses BOSS_OAM..(BOSS_OAM_AFTER-1)
-  ;              so bullets must start at BOSS_OAM_AFTER
-  ; ------------------------------------------------------------
-  lda game_state
-  cmp #STATE_BOSS
-  bne @bullets_normal
-    ldy #BOSS_OAM_AFTER
-    jmp @bullets_start_ok
-@bullets_normal:
-  ldy #BULLET_OAM_BASE
-@bullets_start_ok:
-  ldx #$00
-@bul_draw:
-  cpy #OAM_DYNAMIC_LIMIT
-  bcs @bul_done
-
-  cpx #BULLET_MAX
-  bcs @bul_done
-
-  lda bul_alive,x
-  beq @bul_hide
-
-  ; Y
-  lda bul_y,x
-  sta OAM_BUF,y
-  iny
-  ; tile
-  lda #$05          ; <-- BULLET TILE ID 
-  sta OAM_BUF,y
-  iny
-  ; attr
-  lda #$00          ; palette 0 
-  sta OAM_BUF,y
-  iny
-  ; X
-  lda bul_x,x
-  sta OAM_BUF,y
-  iny
-  jmp @bul_next
-
-@bul_hide:
-  lda #$FE
-  sta OAM_BUF,y
-  iny
-  iny
-  iny
-  iny
-
-@bul_next:
-  inx
-  bne @bul_draw
-
-@bul_done:
-
-@skip_bullets:
-
-  ; ----------------------------
-  ; Enemies (sprites 24..)
-  ; - A/B are 1x1
-  ; - C/D/E are 2x2 metasprites
-  ; ----------------------------
-
-  ldx #$00
-@ene_draw:
-  cpx #ENEMY_MAX
-  bcc @ene_in_range
-  jmp @ene_done
-
-@ene_in_range:
-  lda ene_alive,x
-  bne @ene_alive_ok
-  jmp @ene_skip
-
-@ene_alive_ok:
-
-  ; ----------------------------
-  ; Enemy ATTR (flash pop)
-  ; - if ene_flash>0, strobe alt palette
-  ; - keep flip/priority bits from ENEMY_ATTR
-  ; ----------------------------
-  lda #ENEMY_ATTR
-  sta tmp4                  ; default attr
-
-  lda ene_flash,x
-  beq @attr_ready
-
-  lda frame_lo              ; consistent strobe
-  and #$01
-  beq @attr_ready
-
-  lda #ENEMY_ATTR
-  and #%11111100            ; keep flip/priority bits
-  ora #$02                   ; flash to palette 2
-  sta tmp4
-
-@attr_ready:
-
-
-  ; decide size by type: C/D/E are 2x2 (type >= EN_C)
-  lda ene_type,x
-  cmp #EN_C
-  bcs @ene_is_2x2     ; >= EN_C => 2x2
-  jmp @ene_draw_1x1   ; <  EN_C => 1x1 (long jump)
-
-@ene_is_2x2:
-  ; ---- OAM room guard: 2x2 needs 16 bytes before $E0 ----
-  cpy #OAM_2X2_LIMIT
-  bcc :+
-    jmp @ene_done
-:
-
-  ; ============================
-  ; 2x2 metasprite (C/D/E)
-  ; ============================
-
-  ; pick tile set for C/D/E
-  lda ene_type,x
-  cmp #EN_C
-  beq @ene_tiles_C
-  cmp #EN_D
-  beq @ene_tiles_D
-  ; else E
-
-
-@ene_tiles_E:
-  lda ene_variant,x
-  beq @e_normal
-
-@e_shield:
-  lda #ENEMY_E_S_TL
-  sta tmp0
-  lda #ENEMY_E_S_TR
-  sta tmp1
-  lda #ENEMY_E_S_BL
-  sta tmp2
-  lda #ENEMY_E_S_BR
-  sta tmp3
-  jmp @ene_draw_2x2
-
-@e_normal:
-  lda #ENEMY_E_TL
-  sta tmp0
-  lda #ENEMY_E_TR
-  sta tmp1
-  lda #ENEMY_E_BL
-  sta tmp2
-  lda #ENEMY_E_BR
-  sta tmp3
-  jmp @ene_draw_2x2
-
-
-@ene_tiles_C:
-  lda #ENEMY_C_TL
-  sta tmp0
-  lda #ENEMY_C_TR
-  sta tmp1
-  lda #ENEMY_C_BL
-  sta tmp2
-  lda #ENEMY_C_BR
-  sta tmp3
-  jmp @ene_draw_2x2
-
-@ene_tiles_D:
-  lda #ENEMY_D_TL
-  sta tmp0
-  lda #ENEMY_D_TR
-  sta tmp1
-  lda #ENEMY_D_BL
-  sta tmp2
-  lda #ENEMY_D_BR
-  sta tmp3
-
-  ; --------------------------------------------
-  ; Optional: make D "bank" based on dx
-  ; True 2x2 HFLIP = set HFLIP bit AND swap tiles
-  ; --------------------------------------------
-  lda ene_dx,x
-  bmi @d_flip_left
-  ; right: ensure HFLIP clear
-  lda tmp4
-  and #%10111111      ; clear bit 6
-  sta tmp4
-  jmp @ene_draw_2x2
-
-@d_flip_left:
-  ; set HFLIP
-  lda tmp4
-  ora #%01000000
-  sta tmp4
-
-  ; swap left/right tiles so the 16x16 mirrors correctly
-  lda tmp0
-  pha
-  lda tmp1
-  sta tmp0
-  pla
-  sta tmp1
-
-  lda tmp2
-  pha
-  lda tmp3
-  sta tmp2
-  pla
-  sta tmp3
-
-  jmp @ene_draw_2x2
-
-
-@ene_draw_2x2:
-  ; cache x/y and x+8 / y+8
-  lda ene_x,x
-  sta tmp5          ; x0
-  clc
-  adc #$08
-  sta tmp6          ; x1
-
-  lda ene_y,x
-  sta tmp7          ; y0
-  clc
-  adc #$08
-  sta tmp8          ; y1
-
-  ; phase = frame_lo & 3
-  lda frame_lo
-  and #$03
-  beq @p0
-  cmp #$01
-  beq @p1
-  cmp #$02
-  bne :+
-    jmp @p2
-  :
-  ; else phase 3
-  jmp @p3
-
-; ------------------------------------------------
-; Phase 0: TL TR BL BR  (your original order)
-; ------------------------------------------------
-@p0:
-  ; TL (x0,y0) tile tmp0
-  lda tmp7
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp5
-  sta OAM_BUF,y
-  iny
-
-  ; TR (x1,y0) tile tmp1
-  lda tmp7
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp6
-  sta OAM_BUF,y
-  iny
-
-  ; BL (x0,y1) tile tmp2
-  lda tmp8
-  sta OAM_BUF,y
-  iny
-  lda tmp2
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp5
-  sta OAM_BUF,y
-  iny
-
-  ; BR (x1,y1) tile tmp3
-  lda tmp8
-  sta OAM_BUF,y
-  iny
-  lda tmp3
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp6
-  sta OAM_BUF,y
-  iny
-
-  jmp @ene_next
-
-; ------------------------------------------------
-; Phase 1: TR TL BR BL  (swap left/right, bottom order swapped)
-; ------------------------------------------------
-@p1:
-  ; TR
-  lda tmp7
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp6
-  sta OAM_BUF,y
-  iny
-
-  ; TL
-  lda tmp7
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp5
-  sta OAM_BUF,y
-  iny
-
-  ; BR
-  lda tmp8
-  sta OAM_BUF,y
-  iny
-  lda tmp3
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp6
-  sta OAM_BUF,y
-  iny
-
-  ; BL
-  lda tmp8
-  sta OAM_BUF,y
-  iny
-  lda tmp2
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp5
-  sta OAM_BUF,y
-  iny
-
-  jmp @ene_next
-
-; ------------------------------------------------
-; Phase 2: BL BR TL TR  (bottom row first)
-; ------------------------------------------------
-@p2:
-  ; BL
-  lda tmp8
-  sta OAM_BUF,y
-  iny
-  lda tmp2
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp5
-  sta OAM_BUF,y
-  iny
-
-  ; BR
-  lda tmp8
-  sta OAM_BUF,y
-  iny
-  lda tmp3
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp6
-  sta OAM_BUF,y
-  iny
-
-  ; TL
-  lda tmp7
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp5
-  sta OAM_BUF,y
-  iny
-
-  ; TR
-  lda tmp7
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp6
-  sta OAM_BUF,y
-  iny
-
-  jmp @ene_next
-
-; ------------------------------------------------
-; Phase 3: BR BL TR TL  (bottom-right first)
-; ------------------------------------------------
-@p3:
-  ; BR
-  lda tmp8
-  sta OAM_BUF,y
-  iny
-  lda tmp3
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp6
-  sta OAM_BUF,y
-  iny
-
-  ; BL
-  lda tmp8
-  sta OAM_BUF,y
-  iny
-  lda tmp2
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp5
-  sta OAM_BUF,y
-  iny
-
-  ; TR
-  lda tmp7
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp6
-  sta OAM_BUF,y
-  iny
-
-  ; TL
-  lda tmp7
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp4
-  sta OAM_BUF,y
-  iny
-  lda tmp5
-  sta OAM_BUF,y
-  iny
-
-  jmp @ene_next
-
-
-
-
-@ene_draw_1x1:
-  ; ---- OAM room guard: stop before reserved boss-bullet slots ----
-  cpy #OAM_DYNAMIC_LIMIT
-  bcs @ene_done
-
-  ; ============================
-  ; 1x1 enemy (A/B)
-  ; ============================
-
-  ; Y
-  lda ene_y,x
-  sta OAM_BUF,y
-  iny
-
-  ; tile
-  lda ene_type,x
-  cmp #EN_A
-  beq @tile_A_1
-  ; else B
-  lda #ENEMY_B_TILE
-  bne @tile_done_1
-@tile_A_1:
-  lda #ENEMY_A_TILE
-@tile_done_1:
-  sta OAM_BUF,y
-  iny
-
-  ; attr
-  lda tmp4
-  sta OAM_BUF,y
-
-  iny
-
-  ; X
-  lda ene_x,x
-  sta OAM_BUF,y
-  iny
-
-  jmp @ene_next
-
-
-@ene_skip:
-  ; ---- OAM room guard ----
-  cpy #OAM_DYNAMIC_LIMIT
-  bcs @ene_done
-
-  lda ene_type,x
-  cmp #EN_C
-  bcs @skip_16        ; C/D/E would have been 2x2
-
-  ; A/B would have been 1x1: hide 1 sprite (4 bytes)
-  lda #$FE
-  sta OAM_BUF,y
-  tya
-  clc
-  adc #$04
-  tay
-  jmp @ene_next
-
-@skip_16:
-  lda #$FE
-  sta OAM_BUF,y
-  sta OAM_BUF+4,y
-  sta OAM_BUF+8,y
-  sta OAM_BUF+12,y
-  tya
-  clc
-  adc #$10
-  tay
-  jmp @ene_next
-
-
-
-
-
-@ene_next:
-  inx
-  jmp @ene_draw
-
-@ene_done:
-
-
-  ; ---- catch sprites (skip if we'd enter reserved boss-bullet region) ----
-  cpy #OAM_DYNAMIC_LIMIT
-  bcs @skip_catch_draw
-  jsr DrawCatchSprites
-@skip_catch_draw:
-
-  ; ---- banner overlay ----
-  lda game_state
-  cmp #STATE_BANNER
-  beq @draw_banner
-
-@hide_banner:
-  jsr HideBannerSprites
-  jmp @after_banner
-
-@draw_banner:
-  cpy #OAM_DYNAMIC_LIMIT
-  bcs @after_banner
-  jsr DrawLevelBannerSprites
-
-@after_banner:
-
-  ; ---- BOSS sprites + boss bullets (boss state only) ----
-  ; Draw boss LAST so enemies/catch/banner can't overwrite it.
-  lda game_state
-  cmp #STATE_BOSS
-  bne @after_boss_draw
-
-    ldy #BOSS_OAM
-    jsr DrawBossSprites     ; uses Y as current OAM offset
-
-    jsr DrawBossBullets_Fixed   ; sprites 56–59 ($E0..$EF)
-@after_boss_draw:
-
-   ; --------------------------------------------
-  ; Hide remaining sprites (but DO NOT touch
-  ; fixed boss bullet slots at $E0..$EF)
-  ; --------------------------------------------
-  tya
-  and #$FC          ; align to sprite boundary
-
-  cmp #$F0
-  bcs :+
-    lda #$F0        ; clamp start to $F0 so we won't overwrite $E0..$EF
-:
-  tax
-
-@hide_tail:
-  lda #$FE
-  sta OAM_BUF,x
-  inx
-  inx
-  inx
-  inx
-  bne @hide_tail
-  rts
-
-
 
 
 
@@ -4744,7 +3965,6 @@ bne @done
   rts
 
 
-
 ; ------------------------------------------------------------
 ; PlayerSetOver
 ; - Common game-over transition
@@ -5429,63 +4649,6 @@ beq :+
   rts
 
 
-; ------------------------------------------------------------
-; DrawCatchSprites
-; - Draws CATCH_MAX 1x1 sprites starting at current OAM cursor
-; - INPUT:  Y = byte offset into OAM_BUF (must be multiple of 4)
-; - OUTPUT: Y = advanced cursor
-; - Safety: stops early if Y reaches OAM_DYNAMIC_LIMIT ($E0),
-;           leaving remaining sprites hidden (ClearOAMShadow already did this).
-; ------------------------------------------------------------
-DrawCatchSprites:
-  ldx #$00
-
-@loop:
-  ; ---- OAM room guard ----
-  cpy #OAM_DYNAMIC_LIMIT
-  bcs @done
-
-  cpx #CATCH_MAX
-  bcs @done
-
-  lda catch_alive,x
-  beq @hide_one
-
-  ; Y
-  lda catch_y,x
-  sta OAM_BUF,y
-  iny
-
-  ; TILE (per-object)
-  lda catch_tile,x
-  sta OAM_BUF,y
-  iny
-
-  ; ATTR (array)
-  lda catch_attr,x
-  sta OAM_BUF,y
-  iny
-
-  ; X
-  lda catch_x,x
-  sta OAM_BUF,y
-  iny
-
-  inx
-  jmp @loop
-
-@hide_one:
-  lda #$FE
-  sta OAM_BUF,y     ; hide sprite by Y=$FE
-  iny
-  iny
-  iny
-  iny
-  inx
-  jmp @loop
-
-@done:
-  rts
 
 ; ------------------------------------------------------------
 ; AddScore_TensOnes
@@ -5955,213 +5118,6 @@ NextLevel:
   rts
 
 
-; ------------------------------------------------------------
-; DrawLevelBannerSprites
-; - Draws “LEVEL N” where N is 1..99 (works fine for 1..12)
-; - Digits are tiles DIGIT_TILE_BASE + 0..9
-; ------------------------------------------------------------
-DrawLevelBannerSprites:
-  ldx #BANNER_OAM
-
-  lda #BANNER_X0
-  sta tmp_xcur
-
-  ; L
-  lda #TILE_L
-  jsr _DrawBannerChar
-  ; E
-  lda #TILE_E
-  jsr _DrawBannerChar
-  ; V
-  lda #TILE_V
-  jsr _DrawBannerChar
-  ; E
-  lda #TILE_E
-  jsr _DrawBannerChar
-  ; L
-  lda #TILE_L
-  jsr _DrawBannerChar
-
-  ; space (advance X by 8, no sprite)
-  lda tmp_xcur
-  clc
-  adc #$08
-  sta tmp_xcur
-
-  ; ----------------------------
-  ; level_num = level_idx + 1
-  ; ----------------------------
-  lda level_idx
-  clc
-  adc #$01
-  sta tmp0            ; tmp0 = level number (1..)
-
-  ; if tmp0 < 10 => draw one digit
-  lda tmp0
-  cmp #$0A
-  bcc @one_digit
-
-  ; else: draw tens digit (for 10..19, tens is '1')
-  lda #$01
-  clc
-  adc #DIGIT_TILE_BASE
-  jsr _DrawBannerChar
-
-  ; ones = tmp0 - 10  (0..9)
-  lda tmp0
-  sec
-  sbc #$0A
-  clc
-  adc #DIGIT_TILE_BASE
-  jsr _DrawBannerChar
-  rts
-
-@one_digit:
-  lda tmp0
-  clc
-  adc #DIGIT_TILE_BASE
-  jsr _DrawBannerChar
-  rts
-
-
-
-; A = tile id, X = OAM offset, tmp_xcur = screen X cursor
-_DrawBannerChar:
-  pha
-  lda #BANNER_Y
-  sta OAM_BUF,x
-  inx
-  pla
-  sta OAM_BUF,x
-  inx
-  lda #BANNER_ATTR
-  sta OAM_BUF,x
-  inx
-  lda tmp_xcur
-  sta OAM_BUF,x
-  inx
-
-  lda tmp_xcur
-  clc
-  adc #$08
-  sta tmp_xcur
-  rts
-
-
-
-; A = 0 => hide (write blanks)
-; A = 1 => show (write STARFALL)
-WriteTitleStarfallBG:
-  pha
-
-  ; set VRAM address to TITLE position ($214C)
-  lda PPUSTATUS
-  lda #TITLE_NT_HI
-  sta PPUADDR
-  lda #TITLE_NT_LO
-  sta PPUADDR
-
-  pla
-  beq @write_blanks
-
-@write_text:
-  ldx #$00
-@tloop:
-  lda TitleStarfallTiles,x
-  sta PPUDATA
-  inx
-  cpx #TITLE_LEN
-  bne @tloop
-  jmp @done
-
-@write_blanks:
-  ldx #$00
-@bloop:
-  lda #$00          ; blank tile
-  sta PPUDATA
-  inx
-  cpx #TITLE_LEN
-  bne @bloop
-
-@done:
-
-rts
-
-; A = 0 => hide (write blanks)
-; A = 1 => show (write GameOverTiles)
-WriteGameOverBG:
-  pha
-
-  lda PPUSTATUS
-  lda #GAMEOVER_NT_HI
-  sta PPUADDR
-  lda #GAMEOVER_NT_LO
-  sta PPUADDR
-
-  pla
-  beq @write_blanks
-
-@write_text:
-  ldx #$00
-@tloop:
-  lda GameOverTiles,x
-  sta PPUDATA
-  inx
-  cpx #GAMEOVER_LEN
-  bne @tloop
-  jmp @done
-
-@write_blanks:
-  ldx #$00
-@bloop:
-  lda #$00
-  sta PPUDATA
-  inx
-  cpx #GAMEOVER_LEN
-  bne @bloop
-
-@done:
-rts
-
-
-
-; A = 0 => hide (write blanks)
-; A = 1 => show (write PressStartTiles)
-WritePressStartBG:
-  pha
-
-  ; set VRAM address to $2248
-  lda PPUSTATUS
-  lda #PRESS_NT_HI
-  sta PPUADDR
-  lda #PRESS_NT_LO
-  sta PPUADDR
-
-  pla
-  beq @write_blanks
-
-@write_text:
-  ldx #$00
-@tloop:
-  lda PressStartTiles,x
-  sta PPUDATA
-  inx
-  cpx #PRESS_NT_LEN
-  bne @tloop
-  jmp @done
-
-@write_blanks:
-  ldx #$00
-@bloop:
-  lda #$00          ; blank tile
-  sta PPUDATA
-  inx
-  cpx #PRESS_NT_LEN
-  bne @bloop
-
-@done:
-rts
-
 
 ; ------------------------------------------------------------
 ; ReseedRNG
@@ -6189,268 +5145,6 @@ ReseedRNG:
     sta rng_hi
 :
   rts
-
-
-; ClearOAMShadow
-; sets Y=$FE for all 64 sprites in OAM_BUF
-; ------------------------------------------------------------
-; ClearOAMShadow
-; - Fills OAM_BUF with Y=$FE (hidden) to start from a clean slate
-; ------------------------------------------------------------
-ClearOAMShadow:
-  ldx #$00
-@loop:
-  lda #$FE
-  sta OAM_BUF,x     ; Y byte
-  inx
-  inx
-  inx
-  inx
-  bne @loop
-  rts
-
-HUD_Init:
-  ; init high score digits to 00000 (once per boot; or keep across runs)
-  lda hi_d0
-  ora hi_d1
-  ora hi_d2
-  ora hi_d3
-  ora hi_d4
-  bne :+
-    lda #$00
-    sta hi_d0
-    sta hi_d1
-    sta hi_d2
-    sta hi_d3
-    sta hi_d4
-:
-
-  lda #$01
-  sta hud_dirty
-  rts
-
-HUD_MarkDirty:
-  lda #$01
-  sta hud_dirty
-  rts
-
-; ============================================================
-; HUD (BG TILE UI)
-;
-; Flow:
-;   - Gameplay sets hud_dirty=1 whenever score/lives changes.
-;   - NMI calls HUD_NMI_Update when hud_dirty is set.
-;   - HUD_NMI_Update writes digits + hearts into the HUD nametable region.
-; ============================================================
-
-; ------------------------------------------------------------
-; HUD_NMI_Update (VBlank)
-; - Writes HUD text + digits + hearts as BG tiles
-; - Runs only when hud_dirty=1
-; - Always resets scroll latch after VRAM writes
-; ------------------------------------------------------------
-HUD_NMI_Update:
-  lda hud_dirty
-  bne :+
-  rts
-:
-  lda #$00
-  sta hud_dirty
-
-  ; ---------- write "HI " ----------
-  lda PPUSTATUS
-  lda #HUD_NT_HI
-  sta PPUADDR
-  lda #HUD_HI_LO
-  sta PPUADDR
-
-  lda #TILE_H
-  sta PPUDATA
-  lda #TILE_I
-  sta PPUDATA
-  lda #$00          ; space
-  sta PPUDATA
-
-  ; ---------- write HI digits (5) ----------
-  lda PPUSTATUS
-  lda #HUD_NT_HI
-  sta PPUADDR
-  lda #HUD_HI_DIG_LO
-  sta PPUADDR
-
-  lda hi_d0
-  clc
-  adc #DIGIT_TILE_BASE
-  sta PPUDATA
-  lda hi_d1
-  clc
-  adc #DIGIT_TILE_BASE
-  sta PPUDATA
-  lda hi_d2
-  clc
-  adc #DIGIT_TILE_BASE
-  sta PPUDATA
-  lda hi_d3
-  clc
-  adc #DIGIT_TILE_BASE
-  sta PPUDATA
-  lda hi_d4
-  clc
-  adc #DIGIT_TILE_BASE
-  sta PPUDATA
-
-  ; ---------- write "SC " ----------
-  lda PPUSTATUS
-  lda #HUD_NT_HI
-  sta PPUADDR
-  lda #HUD_SC_LO
-  sta PPUADDR
-
-  lda #TILE_S
-  sta PPUDATA
-  lda #TILE_C
-  sta PPUDATA
-  lda #$00          ; space
-  sta PPUDATA
-
-  ; ---------- write SCORE digits (5) ----------
-  lda PPUSTATUS
-  lda #HUD_NT_HI
-  sta PPUADDR
-  lda #HUD_SC_DIG_LO
-  sta PPUADDR
-
-  lda score_d0
-  clc
-  adc #DIGIT_TILE_BASE
-  sta PPUDATA
-  lda score_d1
-  clc
-  adc #DIGIT_TILE_BASE
-  sta PPUDATA
-  lda score_d2
-  clc
-  adc #DIGIT_TILE_BASE
-  sta PPUDATA
-  lda score_d3
-  clc
-  adc #DIGIT_TILE_BASE
-  sta PPUDATA
-  lda score_d4
-  clc
-  adc #DIGIT_TILE_BASE
-  sta PPUDATA
-
-   ; ---------- write lives hearts (HUD_MAX_LIVES) with spaces ----------
-  lda PPUSTATUS
-  lda #HUD_NT_HI
-  sta PPUADDR
-  lda #HUD_LIVES_LO
-  sta PPUADDR
-
-  lda lives
-  cmp #HUD_MAX_LIVES
-  bcc :+
-    lda #HUD_MAX_LIVES
-:
-  sta tmp0
-
-
-  ldx #$00              ; X = heart index (0..HUD_MAX_LIVES-1)
-@heart_loop:
-  cpx #HUD_MAX_LIVES
-  bcs @hearts_done
-
-  ; if (lives > X) draw heart else blank
-  lda tmp0              ; A = lives
-  cmp #$01              ; (optional micro-guard; can remove)
-  ; not needed, keep going
-
-  lda tmp0
-  cpx tmp0              ; can't compare X to mem directly on 6502, so do it this way:
-  ; ---- do: A=lives; compare to (X+1) ----
-  ; We'll compute (X+1) in A2:
-  ; (Simpler approach below)
-
-  ; --- simpler: compute (X+1) into A and compare lives ---
-  txa
-  clc
-  adc #$01              ; A = X+1
-  sta tmp1              ; tmp1 = X+1
-
-  lda tmp0              ; A = lives
-  cmp tmp1              ; lives >= (X+1) ?
-  bcc @blank
-
-  lda #HEART_TILE
-  bne @write
-
-@blank:
-  lda #$00
-
-@write:
-  sta PPUDATA           ; write heart/blank
-
-  ; space after each heart except the last
-  inx
-  cpx #HUD_MAX_LIVES
-  beq @heart_loop       ; last one: no trailing space
-
-  lda #$00
-  sta PPUDATA
-  jmp @heart_loop
-
-@hearts_done:
-  ; continue HUD_NMI_Update...
-
-rts
-
-
-
-UpdateHighScoreIfNeeded:
-  ; if score > highscore, copy score_d* -> hi_d*
-  lda score_d0
-  cmp hi_d0
-  bcc @no
-  bne @yes
-
-  lda score_d1
-  cmp hi_d1
-  bcc @no
-  bne @yes
-
-  lda score_d2
-  cmp hi_d2
-  bcc @no
-  bne @yes
-
-  lda score_d3
-  cmp hi_d3
-  bcc @no
-  bne @yes
-
-  lda score_d4
-  cmp hi_d4
-  bcc @no
-  ; equal or greater => if equal, no need, if greater here it’s “equal” case
-  beq @no
-
-@yes:
-  lda score_d0
-  sta hi_d0
-  lda score_d1
-  sta hi_d1
-  lda score_d2
-  sta hi_d2
-  lda score_d3
-  sta hi_d3
-  lda score_d4
-  sta hi_d4
-  jsr HUD_MarkDirty
-@no:
-  rts
-
-
 
 
 ; ------------------------------------------------------------
@@ -6509,511 +5203,7 @@ BossSpawn:
 
 
 
-; ------------------------------------------------------------
-; DrawBossSprites4x4_TEMP
-; - TEMP test: draws boss as a 4x4 metasprite (16 sprites)
-; - Assumes boss_x/boss_y are top-left
-; - MUST NOT touch $E0..$EF (fixed boss bullet slots)
-; ------------------------------------------------------------
-DrawBossSprites4x4_TEMP:
-  lda boss_alive
-  bne :+
-    rts
-:
 
-  ; ---- OAM safety guard ----
-  ; need 64 bytes, and must stay below $E0
-  ; last safe start: $E0 - $40 = $A0
-  cpy #$A0
-  bcc :+
-    rts
-:
-
-  lda #BOSS_ATTR
-  sta tmp0
-  lda boss_flash
-  beq @attr_ok
-  lda frame_lo
-  and #$04
-  beq @attr_ok
-  lda #BOSS_ATTR
-  eor #$01
-  sta tmp0
-@attr_ok:
-
-
-
-  ; ============================
-  ; Row 0: y + 0
-  ; ============================
-  lda boss_y
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_00
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  sta OAM_BUF,y
-  iny
-
-  lda boss_y
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_01
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-
-  lda boss_y
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_02
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-
-  lda boss_y
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_03
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  clc
-  adc #$18
-  sta OAM_BUF,y
-  iny
-
-  ; ============================
-  ; Row 1: y + 8
-  ; ============================
-  lda boss_y
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_04
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  sta OAM_BUF,y
-  iny
-
-  lda boss_y
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_05
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-
-  lda boss_y
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_06
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-
-  lda boss_y
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_07
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  clc
-  adc #$18
-  sta OAM_BUF,y
-  iny
-
-  ; ============================
-  ; Row 2: y + 16
-  ; ============================
-  lda boss_y
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_08
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  sta OAM_BUF,y
-  iny
-
-  lda boss_y
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_09
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-
-  lda boss_y
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_0A
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-
-  lda boss_y
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_0B
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  clc
-  adc #$18
-  sta OAM_BUF,y
-  iny
-
-  ; ============================
-  ; Row 3: y + 24
-  ; ============================
-  lda boss_y
-  clc
-  adc #$18
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_0C
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  sta OAM_BUF,y
-  iny
-
-  lda boss_y
-  clc
-  adc #$18
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_0D
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-
-  lda boss_y
-  clc
-  adc #$18
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_0E
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-
-  lda boss_y
-  clc
-  adc #$18
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_0F
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda boss_x
-  clc
-  adc #$18
-  sta OAM_BUF,y
-  iny
-
-  rts
-
-; ------------------------------------------------------------
-; DrawBossSprites
-; - Draws boss as a 3x3 metasprite (9 hardware sprites)
-; - Assumes boss_x/boss_y are top-left
-; - Uses Y shake: base_y = boss_y + boss_shake_dy
-; - IMPORTANT: must not write into $E0..$EF (fixed boss bullet slots)
-; ------------------------------------------------------------
-DrawBossSprites:
-  lda boss_alive
-  bne :+
-    rts
-:
-
-  ; ---- ATTR with flash ----
-  lda #BOSS_ATTR
-  sta tmp0
-  lda boss_flash
-  beq @attr_ok
-  lda frame_lo
-  and #$04
-  beq @attr_ok
-  lda #BOSS_ATTR
-  eor #$01
-  sta tmp0
-@attr_ok:
-
-  ; ---- base X (no shake here) ----
-  lda boss_x
-  sta tmp1
-
-  ; ---- base Y with shake ----
-  lda boss_y
-  clc
-  adc boss_shake_dy
-  sta tmp2
-
-  ; ============================
-  ; Row 0: y = base_y + 0
-  ; ============================
-
-  ; TL
-  lda tmp2
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_TL
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  sta OAM_BUF,y
-  iny
-
-  ; TM
-  lda tmp2
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_TM
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-
-  ; TR
-  lda tmp2
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_TR
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-
-
-  ; ============================
-  ; Row 1: y = base_y + 8
-  ; ============================
-
-  ; ML
-  lda tmp2
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_ML
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  sta OAM_BUF,y
-  iny
-
-  ; MM
-  lda tmp2
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_MM
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-
-  ; MR
-  lda tmp2
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_MR
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-
-
-  ; ============================
-  ; Row 2: y = base_y + 16
-  ; ============================
-
-  ; BL
-  lda tmp2
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_BL
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  sta OAM_BUF,y
-  iny
-
-  ; BM
-  lda tmp2
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_BM
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  clc
-  adc #$08
-  sta OAM_BUF,y
-  iny
-
-  ; BR
-  lda tmp2
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-  lda #BOSS_BR
-  sta OAM_BUF,y
-  iny
-  lda tmp0
-  sta OAM_BUF,y
-  iny
-  lda tmp1
-  clc
-  adc #$10
-  sta OAM_BUF,y
-  iny
-
-  rts
 
 ; ============================================================
 ; BOSS SYSTEM
@@ -7027,53 +5217,6 @@ DrawBossSprites:
 ;   - NMI consumes boss_hp_dirty and calls WriteBossHPBarBG.
 ;   - When the boss ends, set boss_hp_clear_pending=1 so NMI clears the bar once.
 ; ============================================================
-
-; ------------------------------------------------------------
-; DrawBossBullets_Fixed
-; - draws boss bullets into fixed OAM slots (sprites #56-59)
-; - ignores dynamic Y cursor issues
-; ------------------------------------------------------------
-DrawBossBullets_Fixed:
-  ldy #$E0        ; sprite #56 (56*4)
-
-  ldx #$00
-@loop:
-  cpx #BOSS_BULLET_MAX
-  bcs @done
-
-  lda bossbul_alive,x
-  beq @hide
-
-  lda bossbul_y,x
-  sta OAM_BUF,y
-  iny
-
-  lda #$05              ; tile
-  sta OAM_BUF,y
-  iny
-
-  lda #$00              ; TEMP: palette 0
-  sta OAM_BUF,y
-  iny
-
-  lda bossbul_x,x
-  sta OAM_BUF,y
-  iny
-  jmp @next
-
-@hide:
-  lda #$FE
-  sta OAM_BUF,y
-  iny
-  iny
-  iny
-  iny
-
-@next:
-  inx
-  bne @loop
-@done:
-  rts
 
 
 BossUpdate:
@@ -8042,47 +6185,6 @@ CheckPlayerHitByBossBullets:
 
 
 ; ------------------------------------------------------------
-; DrawBossBullets
-; - emits 1 sprite per live boss bullet
-; - expects: Y = OAM write cursor
-; - returns: Y advanced
-; ------------------------------------------------------------
-DrawBossBullets:
-  ldx #$00
-@loop:
-  cpx #BOSS_BULLET_MAX
-  bcs @done
-
-  lda bossbul_alive,x
-  beq @next
-
-  ; OAM safety: need 4 bytes
-  cpy #$FC
-  bcs @done
-
-  lda bossbul_y,x
-  sta OAM_BUF,y
-  iny
-
-  lda #BOSS_BULLET_TILE
-  sta OAM_BUF,y
-  iny
-
-  lda #BOSS_BULLET_ATTR
-  sta OAM_BUF,y
-  iny
-
-  lda bossbul_x,x
-  sta OAM_BUF,y
-  iny
-
-@next:
-  inx
-  bne @loop
-@done:
-  rts
-
-; ------------------------------------------------------------
 ; CollideBulletsBoss
 ; - Bullet vs boss AABB (16x16)
 ; - On boss death: clears bar + clears actors/bullets + advances level
@@ -8263,147 +6365,7 @@ ClearPlayerBullets:
   rts
 
 
-; ------------------------------------------------------------
-; ClearBossHPBG (VBlank)
-; - Writes blank tiles over the boss HP bar region
-; - Called from NMI when boss_hp_clear_pending=1
-; ------------------------------------------------------------
-ClearBossHPBG:
-  lda PPUSTATUS
-  lda #BOSSBAR_NT_HI
-  sta PPUADDR
-  lda #BOSSBAR_NT_LO
-  sta PPUADDR
 
-  ldx #BOSSBAR_LEN
-  lda #BOSSBAR_EMPTY      ; usually $00
-@loop:
-  sta PPUDATA
-  dex
-  bne @loop
-rts
-
-; ------------------------------------------------------------
-; WriteBossHPBarBG (VBlank)
-; - Percent-scaled boss HP bar
-; - 16 tiles wide (BOSSBAR_LEN)
-; ------------------------------------------------------------
-WriteBossHPBarBG:
-  lda PPUSTATUS
-  lda #BOSSBAR_NT_HI
-  sta PPUADDR
-  lda #BOSSBAR_NT_LO
-  sta PPUADDR
-
-  ; If hp_max = 0, avoid divide-by-zero: show empty
-  lda boss_hp_max
-  bne :+
-    lda #$00
-    sta tmp0          ; filled_tiles = 0
-    jmp @draw
-:
-
-  ; Compute filled_tiles in tmp0:
-  ; tmp0 = floor(boss_hp * 16 / boss_hp_max)
-  ; We'll do: numerator = boss_hp << 4  (0..(255*16))
-  ; Use 16-bit numerator in tmp2:tmp1 (lo:hi)
-  lda boss_hp
-  sta tmp1
-  lda #$00
-  sta tmp2
-  ; shift left 4 (16x)
-  asl tmp1
-  rol tmp2
-  asl tmp1
-  rol tmp2
-  asl tmp1
-  rol tmp2
-  asl tmp1
-  rol tmp2
-
-  ; quotient in tmp0
-  lda #$00
-  sta tmp0
-
-@div_loop:
-  ; while (numerator >= boss_hp_max) { numerator -= boss_hp_max; tmp0++; }
-  lda tmp2
-  bne @can_sub        ; if high byte nonzero, definitely >=
-  lda tmp1
-  cmp boss_hp_max
-  bcc @div_done
-
-@can_sub:
-  lda tmp1
-  sec
-  sbc boss_hp_max
-  sta tmp1
-  lda tmp2
-  sbc #$00
-  sta tmp2
-  inc tmp0
-  jmp @div_loop
-
-@div_done:
-  ; clamp to 16 (just in case)
-  lda tmp0
-  cmp #BOSSBAR_LEN
-  bcc :+
-    lda #BOSSBAR_LEN
-    sta tmp0
-:
-
-@draw:
-  ldx #$00
-@loop:
-  cpx #BOSSBAR_LEN
-  bcs @done
-
-  txa
-  cmp tmp0
-  bcc @filled
-
-@empty:
-  lda #BOSSBAR_EMPTY
-  sta PPUDATA
-  inx
-  bne @loop
-
-@filled:
-  lda #BOSSBAR_TILE
-  sta PPUDATA
-  inx
-  bne @loop
-
-@done:
-  rts
-
-
-HideBannerSprites: 
-ldx #BANNER_OAM 
-lda #$FE 
-sta OAM_BUF,x 
-sta OAM_BUF+4,x 
-sta OAM_BUF+8,x 
-sta OAM_BUF+12,x 
-sta OAM_BUF+16,x 
-sta OAM_BUF+20,x 
-sta OAM_BUF+24,x 
-rts
-
-  ; Hides the 5 score digit sprites (sprites 59..63 at OAM $EC..$FF)
-; ------------------------------------------------------------
-; HideScoreSprites
-; - Hides all score sprites by setting their Y=$FE
-; ------------------------------------------------------------
-HideScoreSprites:
-  lda #$FE
-  sta OAM_BUF+$EC     ; sprite 59 Y
-  sta OAM_BUF+$F0     ; sprite 60 Y
-  sta OAM_BUF+$F4     ; sprite 61 Y
-  sta OAM_BUF+$F8     ; sprite 62 Y
-  sta OAM_BUF+$FC     ; sprite 63 Y
-  rts
 
 
 ; ============================================================
@@ -8551,103 +6513,6 @@ DebugSpawn_DrawTestOnce:
 @out:
   rts
 
-; ------------------------------------------------------------
-; DrawStarfieldNT0  ($2000 tile area only) 32x30 = 960 bytes
-; ------------------------------------------------------------
-; ZP temps needed:
-;   tmp0 = random byte
-;   tmp2 = row counter
-
-DrawStarfieldNT0:
-  lda PPUSTATUS
-  lda #$20
-  sta PPUADDR
-  lda #$00
-  sta PPUADDR
-
-  lda #$1E          ; 30 rows
-  sta tmp2
-
-@row:
-  ldy #$20          ; 32 columns
-@col:
-  jsr NextRand
-  sta tmp0
-
-  lda tmp0
-  and #$1F          ; 1/32 chance of star
-  bne @empty
-
-    lda tmp0
-    eor rng_hi
-    and #$03
-    tax
-    lda StarTiles,x
-    jmp @write
-
-
-
-@empty:
-  lda #$00          ; blank tile
-
-@write:
-  sta PPUDATA
-  dey
-  bne @col
-
-  dec tmp2
-  bne @row
-
-  lda PPUSTATUS
-  rts
-
-
-
-
-
-
-; ------------------------------------------------------------
-; DrawStarfieldNT1  ($2400 tile area only) 32x30 = 960 bytes
-; ------------------------------------------------------------
-DrawStarfieldNT1:
-  lda PPUSTATUS
-  lda #$24
-  sta PPUADDR
-  lda #$00
-  sta PPUADDR
-
-  lda #$1E
-  sta tmp2
-
-@row:
-  ldy #$20
-@col:
-  jsr NextRand
-  sta tmp0
-
-  lda tmp0
-  and #$1F
-  bne @empty
-
-    lda tmp0
-    and #$03
-    tax
-    lda StarTiles,x
-    jmp @write
-
-@empty:
-  lda #$00
-
-@write:
-  sta PPUDATA
-  dey
-  bne @col
-
-  dec tmp2
-  bne @row
-
-  lda PPUSTATUS
-  rts
 
 ; ------------------------------------------------------------
 ; CollideBulletsCatch
@@ -9422,37 +7287,1706 @@ BossApplyPhaseParams:
   rts
 
 
-; Top UI band on NT0: set attribute bytes 0..7 to palette 1 ($55)
-SetUIAttrsNT0:
-  lda PPUSTATUS
-  lda #$23
-  sta PPUADDR
-  lda #$C0
-  sta PPUADDR
+  EnterLevelStart:
+  lda tutorial_done
+  bne @go_banner
 
-  ldx #$08
-  lda #$55        ; palette 1 everywhere in those blocks
-@loop:
-  sta PPUDATA
-  dex
-  bne @loop
+  ; first time only: tutorial BEFORE banner
+  lda #STATE_TUTORIAL
+  sta game_state
+
+  lda #$01
+  sta tutorial_visible
+  lda #180
+  sta tutorial_timer
+  lda #$01
+  sta tutorial_dirty
+
   rts
 
-; Same for NT1 (attributes at $27C0)
-SetUIAttrsNT1:
+@go_banner:
+  lda #60
+  sta level_banner
+  lda #STATE_BANNER
+  sta game_state
+  rts
+
+;=========================================================
+; [RENDER]  BuildOAM + draw helpers
+;=========================================================
+; ----------------------------
+; BuildOAM
+; - OAM layout:
+;   sprites 0-3  = player (2x2)
+;   sprites 4-7  = bullets
+;   sprites 8..  = enemies
+; ----------------------------
+; ============================================================
+; RENDERING (SPRITES / OAM SHADOW)
+;
+; Overview:
+;   - Main loop builds an OAM shadow buffer (OAM_BUF) each frame.
+;   - NMI performs the actual OAM DMA ($4014) to upload sprites to PPU.
+;
+; Sprite slot map (by convention in this project):
+;   0..3   : player ship (2x2 metasprite = 4 hardware sprites)
+;   4..7   : bullets (up to BULLET_MAX sprites)
+;   8..??  : enemies (mix of 1x1 and 2x2 metasprites)
+;   later  : boss (2x2) + UI overlays (banner / score / game over)
+;
+; Notes:
+;   - “Hide sprite” convention: set Y=$FE in OAM to hide.
+;   - Keep OAM writes in RAM only; do not touch $2004 outside NMI/DMA.
+; ============================================================
+
+
+; ------------------------------------------------------------
+; OAM SAFETY CONSTANTS (reserved region for fixed boss bullets)
+; ------------------------------------------------------------
+OAM_DYNAMIC_LIMIT = $E0    ; bytes $E0..$EF reserved for DrawBossBullets_Fixed
+OAM_2X2_LIMIT     = $D0    ; need 16 bytes (4 sprites) before hitting $E0
+BULLET_OAM_BASE   = $10    ; sprite 4 (4*4)
+
+
+; ------------------------------------------------------------
+; OAM layout helpers (playtest-safe)
+; ------------------------------------------------------------
+;SPR_HIDE_Y        = $FE
+;BULLET_OAM_BASE   = $10
+;OAM_DYNAMIC_LIMIT = $E0   ; $E0..$EF reserved for DrawBossBullets_Fixed
+BOSS_OAM_BYTES    = 36    ; 9 sprites * 4 bytes
+BOSS_OAM_AFTER    = BOSS_OAM + BOSS_OAM_BYTES
+
+; ------------------------------------------------------------
+; BuildOAM
+; - Clears OAM shadow
+; - Draws sprites for the current game_state
+; - Does NOT do OAM DMA (NMI does that)
+; ------------------------------------------------------------
+
+; ------------------------------------------------------------
+; STABLE ZONE — Sprite build (OAM shadow)
+; Playtest build: avoid logic/timing changes here.
+; ------------------------------------------------------------
+BuildOAM:
+  jsr ClearOAMShadow
+
+  lda game_state
+  cmp #STATE_TITLE
+  bne @check_over
+
+  ; TITLE: nothing to draw (BG does the title)
+  rts
+
+@check_over:
+  lda game_state
+  cmp #STATE_OVER
+  bne @normal_draw
+
+  ; STATE_OVER: no sprites (BG handles overlays)
+  rts
+
+
+
+@normal_draw:
+
+  ; ----------------------------
+  ; Player metasprite (sprites 0-3)
+  ; ----------------------------
+  lda player_attr
+  sta tmp4
+
+  ; ---- jam flash wins ----
+  lda jam_flash_timer
+  beq @check_pickup
+  and #$03
+  beq @pattr_ready
+
+  lda player_attr
+  and #%11111100
+  ora #$01              ; palette 3 for jam (distinct)
+  sta tmp4
+  jmp @pattr_ready
+
+@check_pickup:
+  lda catch_pickup_flash
+  beq @pattr_ready
+  and #$03
+  beq @pattr_ready
+
+  lda player_attr
+  and #%11111100
+  ora #$03              ; palette 2 for pickup
+  sta tmp4
+
+@pattr_ready:
+
+
+  ; TL
+  lda player_y
+  sta OAM_BUF+0
+  lda #$01
+  sta OAM_BUF+1
+  lda tmp4
+  sta OAM_BUF+2
+  lda player_x
+  sta OAM_BUF+3
+
+  ; TR
+  lda player_y
+  sta OAM_BUF+4
+  lda #$02
+  sta OAM_BUF+5
+  lda tmp4
+  sta OAM_BUF+6
+  lda player_x
+  clc
+  adc #$08
+  sta OAM_BUF+7
+
+  ; BL
+  lda player_y
+  clc
+  adc #$08
+  sta OAM_BUF+8
+  lda #$03
+  sta OAM_BUF+9
+  lda tmp4
+  sta OAM_BUF+10
+  lda player_x
+  sta OAM_BUF+11
+
+  ; BR
+  lda player_y
+  clc
+  adc #$08
+  sta OAM_BUF+12
+  lda #$04
+  sta OAM_BUF+13
+  lda tmp4
+  sta OAM_BUF+14
+  lda player_x
+  clc
+  adc #$08
+  sta OAM_BUF+15
+
+  ; ----------------------------
+  ; Bullets (sprite start at 5 )
+  ; ----------------------------
+
+  .if DEBUG_DRAW_TEST
+  lda debug_mode        ; or your draw-test flag, whichever you use
+  ; e.g. if debug_mode != 0 and you're doing spawn-cycling, skip drawing bullets
+  bne @skip_bullets
+.endif
+
+  ; ------------------------------------------------------------
+  ; Bullet OAM start
+  ; - Normal play: bullets start at BULLET_OAM_BASE ($10)
+  ; - Boss fight: boss metasprite uses BOSS_OAM..(BOSS_OAM_AFTER-1)
+  ;              so bullets must start at BOSS_OAM_AFTER
+  ; ------------------------------------------------------------
+  lda game_state
+  cmp #STATE_BOSS
+  bne @bullets_normal
+    ldy #BOSS_OAM_AFTER
+    jmp @bullets_start_ok
+@bullets_normal:
+  ldy #BULLET_OAM_BASE
+@bullets_start_ok:
+  ldx #$00
+@bul_draw:
+  cpy #OAM_DYNAMIC_LIMIT
+  bcs @bul_done
+
+  cpx #BULLET_MAX
+  bcs @bul_done
+
+  lda bul_alive,x
+  beq @bul_hide
+
+  ; Y
+  lda bul_y,x
+  sta OAM_BUF,y
+  iny
+  ; tile
+  lda #$05          ; <-- BULLET TILE ID 
+  sta OAM_BUF,y
+  iny
+  ; attr
+  lda #$00          ; palette 0 
+  sta OAM_BUF,y
+  iny
+  ; X
+  lda bul_x,x
+  sta OAM_BUF,y
+  iny
+  jmp @bul_next
+
+@bul_hide:
+  lda #$FE
+  sta OAM_BUF,y
+  iny
+  iny
+  iny
+  iny
+
+@bul_next:
+  inx
+  bne @bul_draw
+
+@bul_done:
+
+@skip_bullets:
+
+  ; ----------------------------
+  ; Enemies (sprites 24..)
+  ; - A/B are 1x1
+  ; - C/D/E are 2x2 metasprites
+  ; ----------------------------
+
+  ldx #$00
+@ene_draw:
+  cpx #ENEMY_MAX
+  bcc @ene_in_range
+  jmp @ene_done
+
+@ene_in_range:
+  lda ene_alive,x
+  bne @ene_alive_ok
+  jmp @ene_skip
+
+@ene_alive_ok:
+
+  ; ----------------------------
+  ; Enemy ATTR (flash pop)
+  ; - if ene_flash>0, strobe alt palette
+  ; - keep flip/priority bits from ENEMY_ATTR
+  ; ----------------------------
+  lda #ENEMY_ATTR
+  sta tmp4                  ; default attr
+
+  lda ene_flash,x
+  beq @attr_ready
+
+  lda frame_lo              ; consistent strobe
+  and #$01
+  beq @attr_ready
+
+  lda #ENEMY_ATTR
+  and #%11111100            ; keep flip/priority bits
+  ora #$02                   ; flash to palette 2
+  sta tmp4
+
+@attr_ready:
+
+
+  ; decide size by type: C/D/E are 2x2 (type >= EN_C)
+  lda ene_type,x
+  cmp #EN_C
+  bcs @ene_is_2x2     ; >= EN_C => 2x2
+  jmp @ene_draw_1x1   ; <  EN_C => 1x1 (long jump)
+
+@ene_is_2x2:
+  ; ---- OAM room guard: 2x2 needs 16 bytes before $E0 ----
+  cpy #OAM_2X2_LIMIT
+  bcc :+
+    jmp @ene_done
+:
+
+  ; ============================
+  ; 2x2 metasprite (C/D/E)
+  ; ============================
+
+  ; pick tile set for C/D/E
+  lda ene_type,x
+  cmp #EN_C
+  beq @ene_tiles_C
+  cmp #EN_D
+  beq @ene_tiles_D
+  ; else E
+
+
+@ene_tiles_E:
+  lda ene_variant,x
+  beq @e_normal
+
+@e_shield:
+  lda #ENEMY_E_S_TL
+  sta tmp0
+  lda #ENEMY_E_S_TR
+  sta tmp1
+  lda #ENEMY_E_S_BL
+  sta tmp2
+  lda #ENEMY_E_S_BR
+  sta tmp3
+  jmp @ene_draw_2x2
+
+@e_normal:
+  lda #ENEMY_E_TL
+  sta tmp0
+  lda #ENEMY_E_TR
+  sta tmp1
+  lda #ENEMY_E_BL
+  sta tmp2
+  lda #ENEMY_E_BR
+  sta tmp3
+  jmp @ene_draw_2x2
+
+
+@ene_tiles_C:
+  lda #ENEMY_C_TL
+  sta tmp0
+  lda #ENEMY_C_TR
+  sta tmp1
+  lda #ENEMY_C_BL
+  sta tmp2
+  lda #ENEMY_C_BR
+  sta tmp3
+  jmp @ene_draw_2x2
+
+@ene_tiles_D:
+  lda #ENEMY_D_TL
+  sta tmp0
+  lda #ENEMY_D_TR
+  sta tmp1
+  lda #ENEMY_D_BL
+  sta tmp2
+  lda #ENEMY_D_BR
+  sta tmp3
+
+  ; --------------------------------------------
+  ; Optional: make D "bank" based on dx
+  ; True 2x2 HFLIP = set HFLIP bit AND swap tiles
+  ; --------------------------------------------
+  lda ene_dx,x
+  bmi @d_flip_left
+  ; right: ensure HFLIP clear
+  lda tmp4
+  and #%10111111      ; clear bit 6
+  sta tmp4
+  jmp @ene_draw_2x2
+
+@d_flip_left:
+  ; set HFLIP
+  lda tmp4
+  ora #%01000000
+  sta tmp4
+
+  ; swap left/right tiles so the 16x16 mirrors correctly
+  lda tmp0
+  pha
+  lda tmp1
+  sta tmp0
+  pla
+  sta tmp1
+
+  lda tmp2
+  pha
+  lda tmp3
+  sta tmp2
+  pla
+  sta tmp3
+
+  jmp @ene_draw_2x2
+
+
+@ene_draw_2x2:
+  ; cache x/y and x+8 / y+8
+  lda ene_x,x
+  sta tmp5          ; x0
+  clc
+  adc #$08
+  sta tmp6          ; x1
+
+  lda ene_y,x
+  sta tmp7          ; y0
+  clc
+  adc #$08
+  sta tmp8          ; y1
+
+  ; phase = frame_lo & 3
+  lda frame_lo
+  and #$03
+  beq @p0
+  cmp #$01
+  beq @p1
+  cmp #$02
+  bne :+
+    jmp @p2
+  :
+  ; else phase 3
+  jmp @p3
+
+; ------------------------------------------------
+; Phase 0: TL TR BL BR  (your original order)
+; ------------------------------------------------
+@p0:
+  ; TL (x0,y0) tile tmp0
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  ; TR (x1,y0) tile tmp1
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp6
+  sta OAM_BUF,y
+  iny
+
+  ; BL (x0,y1) tile tmp2
+  lda tmp8
+  sta OAM_BUF,y
+  iny
+  lda tmp2
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  ; BR (x1,y1) tile tmp3
+  lda tmp8
+  sta OAM_BUF,y
+  iny
+  lda tmp3
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp6
+  sta OAM_BUF,y
+  iny
+
+  jmp @ene_next
+
+; ------------------------------------------------
+; Phase 1: TR TL BR BL  (swap left/right, bottom order swapped)
+; ------------------------------------------------
+@p1:
+  ; TR
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp6
+  sta OAM_BUF,y
+  iny
+
+  ; TL
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  ; BR
+  lda tmp8
+  sta OAM_BUF,y
+  iny
+  lda tmp3
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp6
+  sta OAM_BUF,y
+  iny
+
+  ; BL
+  lda tmp8
+  sta OAM_BUF,y
+  iny
+  lda tmp2
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  jmp @ene_next
+
+; ------------------------------------------------
+; Phase 2: BL BR TL TR  (bottom row first)
+; ------------------------------------------------
+@p2:
+  ; BL
+  lda tmp8
+  sta OAM_BUF,y
+  iny
+  lda tmp2
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  ; BR
+  lda tmp8
+  sta OAM_BUF,y
+  iny
+  lda tmp3
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp6
+  sta OAM_BUF,y
+  iny
+
+  ; TL
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  ; TR
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp6
+  sta OAM_BUF,y
+  iny
+
+  jmp @ene_next
+
+; ------------------------------------------------
+; Phase 3: BR BL TR TL  (bottom-right first)
+; ------------------------------------------------
+@p3:
+  ; BR
+  lda tmp8
+  sta OAM_BUF,y
+  iny
+  lda tmp3
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp6
+  sta OAM_BUF,y
+  iny
+
+  ; BL
+  lda tmp8
+  sta OAM_BUF,y
+  iny
+  lda tmp2
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  ; TR
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp6
+  sta OAM_BUF,y
+  iny
+
+  ; TL
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  jmp @ene_next
+
+
+
+
+@ene_draw_1x1:
+  ; ---- OAM room guard: stop before reserved boss-bullet slots ----
+  cpy #OAM_DYNAMIC_LIMIT
+  bcs @ene_done
+
+  ; ============================
+  ; 1x1 enemy (A/B)
+  ; ============================
+
+  ; Y
+  lda ene_y,x
+  sta OAM_BUF,y
+  iny
+
+  ; tile
+  lda ene_type,x
+  cmp #EN_A
+  beq @tile_A_1
+  ; else B
+  lda #ENEMY_B_TILE
+  bne @tile_done_1
+@tile_A_1:
+  lda #ENEMY_A_TILE
+@tile_done_1:
+  sta OAM_BUF,y
+  iny
+
+  ; attr
+  lda tmp4
+  sta OAM_BUF,y
+
+  iny
+
+  ; X
+  lda ene_x,x
+  sta OAM_BUF,y
+  iny
+
+  jmp @ene_next
+
+
+@ene_skip:
+  ; ---- OAM room guard ----
+  cpy #OAM_DYNAMIC_LIMIT
+  bcs @ene_done
+
+  lda ene_type,x
+  cmp #EN_C
+  bcs @skip_16        ; C/D/E would have been 2x2
+
+  ; A/B would have been 1x1: hide 1 sprite (4 bytes)
+  lda #$FE
+  sta OAM_BUF,y
+  tya
+  clc
+  adc #$04
+  tay
+  jmp @ene_next
+
+@skip_16:
+  lda #$FE
+  sta OAM_BUF,y
+  sta OAM_BUF+4,y
+  sta OAM_BUF+8,y
+  sta OAM_BUF+12,y
+  tya
+  clc
+  adc #$10
+  tay
+  jmp @ene_next
+
+
+@ene_next:
+  inx
+  jmp @ene_draw
+
+@ene_done:
+
+
+  ; ---- catch sprites (skip if we'd enter reserved boss-bullet region) ----
+  cpy #OAM_DYNAMIC_LIMIT
+  bcs @skip_catch_draw
+  jsr DrawCatchSprites
+@skip_catch_draw:
+
+  ; ---- banner overlay ----
+  lda game_state
+  cmp #STATE_BANNER
+  beq @draw_banner
+
+@hide_banner:
+  jsr HideBannerSprites
+  jmp @after_banner
+
+@draw_banner:
+  cpy #OAM_DYNAMIC_LIMIT
+  bcs @after_banner
+  jsr DrawLevelBannerSprites
+
+@after_banner:
+
+  ; ---- BOSS sprites + boss bullets (boss state only) ----
+  ; Draw boss LAST so enemies/catch/banner can't overwrite it.
+  lda game_state
+  cmp #STATE_BOSS
+  bne @after_boss_draw
+
+    ldy #BOSS_OAM
+    jsr DrawBossSprites     ; uses Y as current OAM offset
+
+    jsr DrawBossBullets_Fixed   ; sprites 56–59 ($E0..$EF)
+@after_boss_draw:
+
+   ; --------------------------------------------
+  ; Hide remaining sprites (but DO NOT touch
+  ; fixed boss bullet slots at $E0..$EF)
+  ; --------------------------------------------
+  tya
+  and #$FC          ; align to sprite boundary
+
+  cmp #$F0
+  bcs :+
+    lda #$F0        ; clamp start to $F0 so we won't overwrite $E0..$EF
+:
+  tax
+
+@hide_tail:
+  lda #$FE
+  sta OAM_BUF,x
+  inx
+  inx
+  inx
+  inx
+  bne @hide_tail
+  rts
+
+
+; ------------------------------------------------------------
+; DrawTestSprite (DEBUG)
+; - Single sprite used to sanity-check OAM rendering
+; ------------------------------------------------------------
+DrawTestSprite:
+  lda #$70
+  sta OAM_BUF+0
+  lda #$00          ; tile 0 (solid)
+  sta OAM_BUF+1
+  lda #$00          ; palette 0
+  sta OAM_BUF+2
+  lda #$80
+  sta OAM_BUF+3
+  rts
+
+
+; ------------------------------------------------------------
+; DrawCatchSprites
+; - Draws CATCH_MAX 1x1 sprites starting at current OAM cursor
+; - INPUT:  Y = byte offset into OAM_BUF (must be multiple of 4)
+; - OUTPUT: Y = advanced cursor
+; - Safety: stops early if Y reaches OAM_DYNAMIC_LIMIT ($E0),
+;           leaving remaining sprites hidden (ClearOAMShadow already did this).
+; ------------------------------------------------------------
+DrawCatchSprites:
+  ldx #$00
+
+@loop:
+  ; ---- OAM room guard ----
+  cpy #OAM_DYNAMIC_LIMIT
+  bcs @done
+
+  cpx #CATCH_MAX
+  bcs @done
+
+  lda catch_alive,x
+  beq @hide_one
+
+  ; Y
+  lda catch_y,x
+  sta OAM_BUF,y
+  iny
+
+  ; TILE (per-object)
+  lda catch_tile,x
+  sta OAM_BUF,y
+  iny
+
+  ; ATTR (array)
+  lda catch_attr,x
+  sta OAM_BUF,y
+  iny
+
+  ; X
+  lda catch_x,x
+  sta OAM_BUF,y
+  iny
+
+  inx
+  jmp @loop
+
+@hide_one:
+  lda #$FE
+  sta OAM_BUF,y     ; hide sprite by Y=$FE
+  iny
+  iny
+  iny
+  iny
+  inx
+  jmp @loop
+
+@done:
+  rts
+
+
+; ------------------------------------------------------------
+; DrawLevelBannerSprites
+; - Draws “LEVEL N” where N is 1..99 (works fine for 1..12)
+; - Digits are tiles DIGIT_TILE_BASE + 0..9
+; ------------------------------------------------------------
+DrawLevelBannerSprites:
+  ldx #BANNER_OAM
+
+  lda #BANNER_X0
+  sta tmp_xcur
+
+  ; L
+  lda #TILE_L
+  jsr _DrawBannerChar
+  ; E
+  lda #TILE_E
+  jsr _DrawBannerChar
+  ; V
+  lda #TILE_V
+  jsr _DrawBannerChar
+  ; E
+  lda #TILE_E
+  jsr _DrawBannerChar
+  ; L
+  lda #TILE_L
+  jsr _DrawBannerChar
+
+  ; space (advance X by 8, no sprite)
+  lda tmp_xcur
+  clc
+  adc #$08
+  sta tmp_xcur
+
+  ; ----------------------------
+  ; level_num = level_idx + 1
+  ; ----------------------------
+  lda level_idx
+  clc
+  adc #$01
+  sta tmp0            ; tmp0 = level number (1..)
+
+  ; if tmp0 < 10 => draw one digit
+  lda tmp0
+  cmp #$0A
+  bcc @one_digit
+
+  ; else: draw tens digit (for 10..19, tens is '1')
+  lda #$01
+  clc
+  adc #DIGIT_TILE_BASE
+  jsr _DrawBannerChar
+
+  ; ones = tmp0 - 10  (0..9)
+  lda tmp0
+  sec
+  sbc #$0A
+  clc
+  adc #DIGIT_TILE_BASE
+  jsr _DrawBannerChar
+  rts
+
+@one_digit:
+  lda tmp0
+  clc
+  adc #DIGIT_TILE_BASE
+  jsr _DrawBannerChar
+  rts
+
+
+
+; A = tile id, X = OAM offset, tmp_xcur = screen X cursor
+_DrawBannerChar:
+  pha
+  lda #BANNER_Y
+  sta OAM_BUF,x
+  inx
+  pla
+  sta OAM_BUF,x
+  inx
+  lda #BANNER_ATTR
+  sta OAM_BUF,x
+  inx
+  lda tmp_xcur
+  sta OAM_BUF,x
+  inx
+
+  lda tmp_xcur
+  clc
+  adc #$08
+  sta tmp_xcur
+  rts
+
+
+
+; A = 0 => hide (write blanks)
+; A = 1 => show (write STARFALL)
+WriteTitleStarfallBG:
+  pha
+
+  ; set VRAM address to TITLE position ($214C)
   lda PPUSTATUS
-  lda #$27
+  lda #TITLE_NT_HI
   sta PPUADDR
-  lda #$C0
+  lda #TITLE_NT_LO
   sta PPUADDR
 
-  ldx #$08
-  lda #$55
-@loop:
+  pla
+  beq @write_blanks
+
+@write_text:
+  ldx #$00
+@tloop:
+  lda TitleStarfallTiles,x
   sta PPUDATA
-  dex
-  bne @loop
+  inx
+  cpx #TITLE_LEN
+  bne @tloop
+  jmp @done
+
+@write_blanks:
+  ldx #$00
+@bloop:
+  lda #$00          ; blank tile
+  sta PPUDATA
+  inx
+  cpx #TITLE_LEN
+  bne @bloop
+
+@done:
+
+rts
+
+; A = 0 => hide (write blanks)
+; A = 1 => show (write GameOverTiles)
+WriteGameOverBG:
+  pha
+
+  lda PPUSTATUS
+  lda #GAMEOVER_NT_HI
+  sta PPUADDR
+  lda #GAMEOVER_NT_LO
+  sta PPUADDR
+
+  pla
+  beq @write_blanks
+
+@write_text:
+  ldx #$00
+@tloop:
+  lda GameOverTiles,x
+  sta PPUDATA
+  inx
+  cpx #GAMEOVER_LEN
+  bne @tloop
+  jmp @done
+
+@write_blanks:
+  ldx #$00
+@bloop:
+  lda #$00
+  sta PPUDATA
+  inx
+  cpx #GAMEOVER_LEN
+  bne @bloop
+
+@done:
+rts
+
+
+
+; A = 0 => hide (write blanks)
+; A = 1 => show (write PressStartTiles)
+WritePressStartBG:
+  pha
+
+  ; set VRAM address to $2248
+  lda PPUSTATUS
+  lda #PRESS_NT_HI
+  sta PPUADDR
+  lda #PRESS_NT_LO
+  sta PPUADDR
+
+  pla
+  beq @write_blanks
+
+@write_text:
+  ldx #$00
+@tloop:
+  lda PressStartTiles,x
+  sta PPUDATA
+  inx
+  cpx #PRESS_NT_LEN
+  bne @tloop
+  jmp @done
+
+@write_blanks:
+  ldx #$00
+@bloop:
+  lda #$00          ; blank tile
+  sta PPUDATA
+  inx
+  cpx #PRESS_NT_LEN
+  bne @bloop
+
+@done:
+rts
+
+; -------------------------------------------------------------
+; Boss Render
+; -------------------------------------------------------------
+
+; ------------------------------------------------------------
+; DrawBossSprites4x4_TEMP
+; - TEMP test: draws boss as a 4x4 metasprite (16 sprites)
+; - Assumes boss_x/boss_y are top-left
+; - MUST NOT touch $E0..$EF (fixed boss bullet slots)
+; ------------------------------------------------------------
+DrawBossSprites4x4_TEMP:
+  lda boss_alive
+  bne :+
+    rts
+:
+
+  ; ---- OAM safety guard ----
+  ; need 64 bytes, and must stay below $E0
+  ; last safe start: $E0 - $40 = $A0
+  cpy #$A0
+  bcc :+
+    rts
+:
+
+  lda #BOSS_ATTR
+  sta tmp0
+  lda boss_flash
+  beq @attr_ok
+  lda frame_lo
+  and #$04
+  beq @attr_ok
+  lda #BOSS_ATTR
+  eor #$01
+  sta tmp0
+@attr_ok:
+
+
+
+  ; ============================
+  ; Row 0: y + 0
+  ; ============================
+  lda boss_y
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_00
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  sta OAM_BUF,y
+  iny
+
+  lda boss_y
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_01
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+
+  lda boss_y
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_02
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+
+  lda boss_y
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_03
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  clc
+  adc #$18
+  sta OAM_BUF,y
+  iny
+
+  ; ============================
+  ; Row 1: y + 8
+  ; ============================
+  lda boss_y
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_04
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  sta OAM_BUF,y
+  iny
+
+  lda boss_y
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_05
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+
+  lda boss_y
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_06
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+
+  lda boss_y
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_07
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  clc
+  adc #$18
+  sta OAM_BUF,y
+  iny
+
+  ; ============================
+  ; Row 2: y + 16
+  ; ============================
+  lda boss_y
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_08
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  sta OAM_BUF,y
+  iny
+
+  lda boss_y
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_09
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+
+  lda boss_y
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_0A
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+
+  lda boss_y
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_0B
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  clc
+  adc #$18
+  sta OAM_BUF,y
+  iny
+
+  ; ============================
+  ; Row 3: y + 24
+  ; ============================
+  lda boss_y
+  clc
+  adc #$18
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_0C
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  sta OAM_BUF,y
+  iny
+
+  lda boss_y
+  clc
+  adc #$18
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_0D
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+
+  lda boss_y
+  clc
+  adc #$18
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_0E
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+
+  lda boss_y
+  clc
+  adc #$18
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_0F
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda boss_x
+  clc
+  adc #$18
+  sta OAM_BUF,y
+  iny
+
   rts
+
+; ------------------------------------------------------------
+; DrawBossSprites
+; - Draws boss as a 3x3 metasprite (9 hardware sprites)
+; - Assumes boss_x/boss_y are top-left
+; - Uses Y shake: base_y = boss_y + boss_shake_dy
+; - IMPORTANT: must not write into $E0..$EF (fixed boss bullet slots)
+; ------------------------------------------------------------
+DrawBossSprites:
+  lda boss_alive
+  bne :+
+    rts
+:
+
+  ; ---- ATTR with flash ----
+  lda #BOSS_ATTR
+  sta tmp0
+  lda boss_flash
+  beq @attr_ok
+  lda frame_lo
+  and #$04
+  beq @attr_ok
+  lda #BOSS_ATTR
+  eor #$01
+  sta tmp0
+@attr_ok:
+
+  ; ---- base X (no shake here) ----
+  lda boss_x
+  sta tmp1
+
+  ; ---- base Y with shake ----
+  lda boss_y
+  clc
+  adc boss_shake_dy
+  sta tmp2
+
+  ; ============================
+  ; Row 0: y = base_y + 0
+  ; ============================
+
+  ; TL
+  lda tmp2
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_TL
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  sta OAM_BUF,y
+  iny
+
+  ; TM
+  lda tmp2
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_TM
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+
+  ; TR
+  lda tmp2
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_TR
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+
+
+  ; ============================
+  ; Row 1: y = base_y + 8
+  ; ============================
+
+  ; ML
+  lda tmp2
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_ML
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  sta OAM_BUF,y
+  iny
+
+  ; MM
+  lda tmp2
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_MM
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+
+  ; MR
+  lda tmp2
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_MR
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+
+
+  ; ============================
+  ; Row 2: y = base_y + 16
+  ; ============================
+
+  ; BL
+  lda tmp2
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_BL
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  sta OAM_BUF,y
+  iny
+
+  ; BM
+  lda tmp2
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_BM
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+
+  ; BR
+  lda tmp2
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+  lda #BOSS_BR
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  clc
+  adc #$10
+  sta OAM_BUF,y
+  iny
+
+  rts
+
+; ------------------------------------------------------------
+; DrawBossBullets
+; - emits 1 sprite per live boss bullet
+; - expects: Y = OAM write cursor
+; - returns: Y advanced
+; ------------------------------------------------------------
+DrawBossBullets:
+  ldx #$00
+@loop:
+  cpx #BOSS_BULLET_MAX
+  bcs @done
+
+  lda bossbul_alive,x
+  beq @next
+
+  ; OAM safety: need 4 bytes
+  cpy #$FC
+  bcs @done
+
+  lda bossbul_y,x
+  sta OAM_BUF,y
+  iny
+
+  lda #BOSS_BULLET_TILE
+  sta OAM_BUF,y
+  iny
+
+  lda #BOSS_BULLET_ATTR
+  sta OAM_BUF,y
+  iny
+
+  lda bossbul_x,x
+  sta OAM_BUF,y
+  iny
+
+@next:
+  inx
+  bne @loop
+@done:
+  rts
+
+
+; ------------------------------------------------------------
+; DrawBossBullets_Fixed
+; - draws boss bullets into fixed OAM slots (sprites #56-59)
+; - ignores dynamic Y cursor issues
+; ------------------------------------------------------------
+DrawBossBullets_Fixed:
+  ldy #$E0        ; sprite #56 (56*4)
+
+  ldx #$00
+@loop:
+  cpx #BOSS_BULLET_MAX
+  bcs @done
+
+  lda bossbul_alive,x
+  beq @hide
+
+  lda bossbul_y,x
+  sta OAM_BUF,y
+  iny
+
+  lda #$05              ; tile
+  sta OAM_BUF,y
+  iny
+
+  lda #$00              ; TEMP: palette 0
+  sta OAM_BUF,y
+  iny
+
+  lda bossbul_x,x
+  sta OAM_BUF,y
+  iny
+  jmp @next
+
+@hide:
+  lda #$FE
+  sta OAM_BUF,y
+  iny
+  iny
+  iny
+  iny
+
+@next:
+  inx
+  bne @loop
+@done:
+  rts
+
 
 DrawTutorialBG:
   ; LINE 1: "AVOID ENEMIES" (13 chars)
@@ -9553,29 +9087,528 @@ DrawTutorialBG:
 
   rts
 
-  EnterLevelStart:
-  lda tutorial_done
-  bne @go_banner
 
-  ; first time only: tutorial BEFORE banner
-  lda #STATE_TUTORIAL
-  sta game_state
 
-  lda #$01
-  sta tutorial_visible
-  lda #180
-  sta tutorial_timer
-  lda #$01
-  sta tutorial_dirty
+; ------------------------------------------------------------
+; ClearBossHPBG (VBlank)
+; - Writes blank tiles over the boss HP bar region
+; - Called from NMI when boss_hp_clear_pending=1
+; ------------------------------------------------------------
+ClearBossHPBG:
+  lda PPUSTATUS
+  lda #BOSSBAR_NT_HI
+  sta PPUADDR
+  lda #BOSSBAR_NT_LO
+  sta PPUADDR
 
+  ldx #BOSSBAR_LEN
+  lda #BOSSBAR_EMPTY      ; usually $00
+@loop:
+  sta PPUDATA
+  dex
+  bne @loop
+rts
+
+; ------------------------------------------------------------
+; WriteBossHPBarBG (VBlank)
+; - Percent-scaled boss HP bar
+; - 16 tiles wide (BOSSBAR_LEN)
+; ------------------------------------------------------------
+WriteBossHPBarBG:
+  lda PPUSTATUS
+  lda #BOSSBAR_NT_HI
+  sta PPUADDR
+  lda #BOSSBAR_NT_LO
+  sta PPUADDR
+
+  ; If hp_max = 0, avoid divide-by-zero: show empty
+  lda boss_hp_max
+  bne :+
+    lda #$00
+    sta tmp0          ; filled_tiles = 0
+    jmp @draw
+:
+
+  ; Compute filled_tiles in tmp0:
+  ; tmp0 = floor(boss_hp * 16 / boss_hp_max)
+  ; We'll do: numerator = boss_hp << 4  (0..(255*16))
+  ; Use 16-bit numerator in tmp2:tmp1 (lo:hi)
+  lda boss_hp
+  sta tmp1
+  lda #$00
+  sta tmp2
+  ; shift left 4 (16x)
+  asl tmp1
+  rol tmp2
+  asl tmp1
+  rol tmp2
+  asl tmp1
+  rol tmp2
+  asl tmp1
+  rol tmp2
+
+  ; quotient in tmp0
+  lda #$00
+  sta tmp0
+
+@div_loop:
+  ; while (numerator >= boss_hp_max) { numerator -= boss_hp_max; tmp0++; }
+  lda tmp2
+  bne @can_sub        ; if high byte nonzero, definitely >=
+  lda tmp1
+  cmp boss_hp_max
+  bcc @div_done
+
+@can_sub:
+  lda tmp1
+  sec
+  sbc boss_hp_max
+  sta tmp1
+  lda tmp2
+  sbc #$00
+  sta tmp2
+  inc tmp0
+  jmp @div_loop
+
+@div_done:
+  ; clamp to 16 (just in case)
+  lda tmp0
+  cmp #BOSSBAR_LEN
+  bcc :+
+    lda #BOSSBAR_LEN
+    sta tmp0
+:
+
+@draw:
+  ldx #$00
+@loop:
+  cpx #BOSSBAR_LEN
+  bcs @done
+
+  txa
+  cmp tmp0
+  bcc @filled
+
+@empty:
+  lda #BOSSBAR_EMPTY
+  sta PPUDATA
+  inx
+  bne @loop
+
+@filled:
+  lda #BOSSBAR_TILE
+  sta PPUDATA
+  inx
+  bne @loop
+
+@done:
   rts
 
-@go_banner:
-  lda #60
-  sta level_banner
-  lda #STATE_BANNER
-  sta game_state
+
+HideBannerSprites: 
+ldx #BANNER_OAM 
+lda #$FE 
+sta OAM_BUF,x 
+sta OAM_BUF+4,x 
+sta OAM_BUF+8,x 
+sta OAM_BUF+12,x 
+sta OAM_BUF+16,x 
+sta OAM_BUF+20,x 
+sta OAM_BUF+24,x 
+rts
+
+  ; Hides the 5 score digit sprites (sprites 59..63 at OAM $EC..$FF)
+; ------------------------------------------------------------
+; HideScoreSprites
+; - Hides all score sprites by setting their Y=$FE
+; ------------------------------------------------------------
+HideScoreSprites:
+  lda #$FE
+  sta OAM_BUF+$EC     ; sprite 59 Y
+  sta OAM_BUF+$F0     ; sprite 60 Y
+  sta OAM_BUF+$F4     ; sprite 61 Y
+  sta OAM_BUF+$F8     ; sprite 62 Y
+  sta OAM_BUF+$FC     ; sprite 63 Y
   rts
+
+
+; ClearOAMShadow
+; sets Y=$FE for all 64 sprites in OAM_BUF
+; ------------------------------------------------------------
+; ClearOAMShadow
+; - Fills OAM_BUF with Y=$FE (hidden) to start from a clean slate
+; ------------------------------------------------------------
+ClearOAMShadow:
+  ldx #$00
+@loop:
+  lda #$FE
+  sta OAM_BUF,x     ; Y byte
+  inx
+  inx
+  inx
+  inx
+  bne @loop
+  rts
+
+HUD_Init:
+  ; init high score digits to 00000 (once per boot; or keep across runs)
+  lda hi_d0
+  ora hi_d1
+  ora hi_d2
+  ora hi_d3
+  ora hi_d4
+  bne :+
+    lda #$00
+    sta hi_d0
+    sta hi_d1
+    sta hi_d2
+    sta hi_d3
+    sta hi_d4
+:
+
+  lda #$01
+  sta hud_dirty
+  rts
+
+HUD_MarkDirty:
+  lda #$01
+  sta hud_dirty
+  rts
+
+; ============================================================
+; HUD (BG TILE UI)
+;
+; Flow:
+;   - Gameplay sets hud_dirty=1 whenever score/lives changes.
+;   - NMI calls HUD_NMI_Update when hud_dirty is set.
+;   - HUD_NMI_Update writes digits + hearts into the HUD nametable region.
+; ============================================================
+
+; ------------------------------------------------------------
+; HUD_NMI_Update (VBlank)
+; - Writes HUD text + digits + hearts as BG tiles
+; - Runs only when hud_dirty=1
+; - Always resets scroll latch after VRAM writes
+; ------------------------------------------------------------
+HUD_NMI_Update:
+  lda hud_dirty
+  bne :+
+  rts
+:
+  lda #$00
+  sta hud_dirty
+
+  ; ---------- write "HI " ----------
+  lda PPUSTATUS
+  lda #HUD_NT_HI
+  sta PPUADDR
+  lda #HUD_HI_LO
+  sta PPUADDR
+
+  lda #TILE_H
+  sta PPUDATA
+  lda #TILE_I
+  sta PPUDATA
+  lda #$00          ; space
+  sta PPUDATA
+
+  ; ---------- write HI digits (5) ----------
+  lda PPUSTATUS
+  lda #HUD_NT_HI
+  sta PPUADDR
+  lda #HUD_HI_DIG_LO
+  sta PPUADDR
+
+  lda hi_d0
+  clc
+  adc #DIGIT_TILE_BASE
+  sta PPUDATA
+  lda hi_d1
+  clc
+  adc #DIGIT_TILE_BASE
+  sta PPUDATA
+  lda hi_d2
+  clc
+  adc #DIGIT_TILE_BASE
+  sta PPUDATA
+  lda hi_d3
+  clc
+  adc #DIGIT_TILE_BASE
+  sta PPUDATA
+  lda hi_d4
+  clc
+  adc #DIGIT_TILE_BASE
+  sta PPUDATA
+
+  ; ---------- write "SC " ----------
+  lda PPUSTATUS
+  lda #HUD_NT_HI
+  sta PPUADDR
+  lda #HUD_SC_LO
+  sta PPUADDR
+
+  lda #TILE_S
+  sta PPUDATA
+  lda #TILE_C
+  sta PPUDATA
+  lda #$00          ; space
+  sta PPUDATA
+
+  ; ---------- write SCORE digits (5) ----------
+  lda PPUSTATUS
+  lda #HUD_NT_HI
+  sta PPUADDR
+  lda #HUD_SC_DIG_LO
+  sta PPUADDR
+
+  lda score_d0
+  clc
+  adc #DIGIT_TILE_BASE
+  sta PPUDATA
+  lda score_d1
+  clc
+  adc #DIGIT_TILE_BASE
+  sta PPUDATA
+  lda score_d2
+  clc
+  adc #DIGIT_TILE_BASE
+  sta PPUDATA
+  lda score_d3
+  clc
+  adc #DIGIT_TILE_BASE
+  sta PPUDATA
+  lda score_d4
+  clc
+  adc #DIGIT_TILE_BASE
+  sta PPUDATA
+
+   ; ---------- write lives hearts (HUD_MAX_LIVES) with spaces ----------
+  lda PPUSTATUS
+  lda #HUD_NT_HI
+  sta PPUADDR
+  lda #HUD_LIVES_LO
+  sta PPUADDR
+
+  lda lives
+  cmp #HUD_MAX_LIVES
+  bcc :+
+    lda #HUD_MAX_LIVES
+:
+  sta tmp0
+
+
+  ldx #$00              ; X = heart index (0..HUD_MAX_LIVES-1)
+@heart_loop:
+  cpx #HUD_MAX_LIVES
+  bcs @hearts_done
+
+  ; if (lives > X) draw heart else blank
+  lda tmp0              ; A = lives
+  cmp #$01              ; (optional micro-guard; can remove)
+  ; not needed, keep going
+
+  lda tmp0
+  cpx tmp0              ; can't compare X to mem directly on 6502, so do it this way:
+  ; ---- do: A=lives; compare to (X+1) ----
+  ; We'll compute (X+1) in A2:
+  ; (Simpler approach below)
+
+  ; --- simpler: compute (X+1) into A and compare lives ---
+  txa
+  clc
+  adc #$01              ; A = X+1
+  sta tmp1              ; tmp1 = X+1
+
+  lda tmp0              ; A = lives
+  cmp tmp1              ; lives >= (X+1) ?
+  bcc @blank
+
+  lda #HEART_TILE
+  bne @write
+
+@blank:
+  lda #$00
+
+@write:
+  sta PPUDATA           ; write heart/blank
+
+  ; space after each heart except the last
+  inx
+  cpx #HUD_MAX_LIVES
+  beq @heart_loop       ; last one: no trailing space
+
+  lda #$00
+  sta PPUDATA
+  jmp @heart_loop
+
+@hearts_done:
+  ; continue HUD_NMI_Update...
+
+rts
+
+
+
+UpdateHighScoreIfNeeded:
+  ; if score > highscore, copy score_d* -> hi_d*
+  lda score_d0
+  cmp hi_d0
+  bcc @no
+  bne @yes
+
+  lda score_d1
+  cmp hi_d1
+  bcc @no
+  bne @yes
+
+  lda score_d2
+  cmp hi_d2
+  bcc @no
+  bne @yes
+
+  lda score_d3
+  cmp hi_d3
+  bcc @no
+  bne @yes
+
+  lda score_d4
+  cmp hi_d4
+  bcc @no
+  ; equal or greater => if equal, no need, if greater here it’s “equal” case
+  beq @no
+
+@yes:
+  lda score_d0
+  sta hi_d0
+  lda score_d1
+  sta hi_d1
+  lda score_d2
+  sta hi_d2
+  lda score_d3
+  sta hi_d3
+  lda score_d4
+  sta hi_d4
+  jsr HUD_MarkDirty
+@no:
+  rts
+
+
+; ------------------------------------------------------------
+; DrawStarfieldNT0  ($2000 tile area only) 32x30 = 960 bytes
+; ------------------------------------------------------------
+; ZP temps needed:
+;   tmp0 = random byte
+;   tmp2 = row counter
+
+DrawStarfieldNT0:
+  lda PPUSTATUS
+  lda #$20
+  sta PPUADDR
+  lda #$00
+  sta PPUADDR
+
+  lda #$1E          ; 30 rows
+  sta tmp2
+
+@row:
+  ldy #$20          ; 32 columns
+@col:
+  jsr NextRand
+  sta tmp0
+
+  lda tmp0
+  and #$1F          ; 1/32 chance of star
+  bne @empty
+
+    lda tmp0
+    eor rng_hi
+    and #$03
+    tax
+    lda StarTiles,x
+    jmp @write
+
+
+
+@empty:
+  lda #$00          ; blank tile
+
+@write:
+  sta PPUDATA
+  dey
+  bne @col
+
+  dec tmp2
+  bne @row
+
+  lda PPUSTATUS
+  rts
+
+
+
+
+
+
+; ------------------------------------------------------------
+; DrawStarfieldNT1  ($2400 tile area only) 32x30 = 960 bytes
+; ------------------------------------------------------------
+DrawStarfieldNT1:
+  lda PPUSTATUS
+  lda #$24
+  sta PPUADDR
+  lda #$00
+  sta PPUADDR
+
+  lda #$1E
+  sta tmp2
+
+@row:
+  ldy #$20
+@col:
+  jsr NextRand
+  sta tmp0
+
+  lda tmp0
+  and #$1F
+  bne @empty
+
+    lda tmp0
+    and #$03
+    tax
+    lda StarTiles,x
+    jmp @write
+
+@empty:
+  lda #$00
+
+@write:
+  sta PPUDATA
+  dey
+  bne @col
+
+  dec tmp2
+  bne @row
+
+  lda PPUSTATUS
+  rts
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 ; ----------------------------
@@ -9587,7 +9620,7 @@ DrawTutorialBG:
   .word IRQ
 
 ; ----------------------------
-; CHR (8KB)
+; [CHR] (8KB)
 ; ----------------------------
 .segment "CHARS"
 ; Tile 00 (blank)
