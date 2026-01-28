@@ -82,6 +82,14 @@ STATE_OVER      = $03
 STATE_TITLE     = $04
 STATE_PAUSE     = $05   ; pick an unused value
 STATE_TUTORIAL  = $06   ; pick a value not used
+STATE_INTRO     = $07
+; ============================================================
+; TEXTQ (Reusable text queue)
+; ============================================================
+TEXTQ_BUF_SIZE = 192         ; adjust (192..512 typical). Keep <= 255 if you want 8-bit indices.
+TEXTQ_END_MARK = $00         ; len=0 terminates the command stream
+
+TEXTQ_FLUSH_BUDGET = 128   ; bytes of VRAM data per NMI (tune 32..96)
 
 ; ------------------------------------------------------------
 ; OAM layout
@@ -106,45 +114,57 @@ ENEMY_B_TILE_ACCENT = $09   ; 2-tone variant
 ENEMY_A_TILE = ENEMY_A_TILE_SOLID
 ENEMY_B_TILE = ENEMY_B_TILE_SOLID
 DIGIT_TILE_BASE  = $10     ; 0..9 => $10..$19
-LETTER_TILE_BASE = $1A     ; project-specific font mapping
-TILE_G = $1A
-TILE_A = $1B
-TILE_M = $1C
-TILE_E = $1D
-TILE_O = $1E
-TILE_V = $1F
-TILE_R = $20
-TILE_P = $21
-TILE_F = $22
-TILE_S = $24
-TILE_T = $26
-TILE_L = $27
-TILE_H = $29
-TILE_I = $2A
-TILE_C = $2B
-TILE_U = $23
-TILE_D = $25
-TILE_N = $54
+
+LETTER_TILE_BASE = $60
+
+TILE_A = LETTER_TILE_BASE+$00
+TILE_B = LETTER_TILE_BASE+$01
+TILE_C = LETTER_TILE_BASE+$02
+TILE_D = LETTER_TILE_BASE+$03
+TILE_E = LETTER_TILE_BASE+$04
+TILE_F = LETTER_TILE_BASE+$05
+TILE_G = LETTER_TILE_BASE+$06
+TILE_H = LETTER_TILE_BASE+$07
+TILE_I = LETTER_TILE_BASE+$08
+TILE_J = LETTER_TILE_BASE+$09
+TILE_K = LETTER_TILE_BASE+$0A
+TILE_L = LETTER_TILE_BASE+$0B
+TILE_M = LETTER_TILE_BASE+$0C
+TILE_N = LETTER_TILE_BASE+$0D
+TILE_O = LETTER_TILE_BASE+$0E
+TILE_P = LETTER_TILE_BASE+$0F
+TILE_Q = LETTER_TILE_BASE+$10
+TILE_R = LETTER_TILE_BASE+$11
+TILE_S = LETTER_TILE_BASE+$12
+TILE_T = LETTER_TILE_BASE+$13
+TILE_U = LETTER_TILE_BASE+$14
+TILE_V = LETTER_TILE_BASE+$15
+TILE_W = LETTER_TILE_BASE+$16
+TILE_X = LETTER_TILE_BASE+$17
+TILE_Y = LETTER_TILE_BASE+$18
+TILE_Z = LETTER_TILE_BASE+$19
+
+; keep $00 as string terminator ONLY
+; use $0A as “space/blank tile”
+TILE_SPACE = $0A
+
+
 HEART_TILE = $28
 CATCH_TILE_CORE    = $30        ; new tile index
 
 ; ------------------------------------------------------------
 ; UI layout
 ; ------------------------------------------------------------
-BOSSBAR_NT_HI   = $20
-BOSSBAR_NT_LO   = $68   ; row 3, column $2068
-BOSSBAR_LEN     = $10   ; 16 tiles
-BOSSBAR_TILE    = $0A
-BOSSBAR_EMPTY   = $00   ; empty
+
 TITLE_NT_HI  = $21
 TITLE_NT_LO  = $8C    ; row 12, col 12  => $218C
 TITLE_LEN    = 8
-;PRESS_NT_HI  = $22
-;PRESS_NT_LO  = $4B    ; row 18, col 11  => $224B
-;PRESS_NT_LEN = 11     ; "PRESS"(5) + space(1) + "START"(5)
-;GAMEOVER_NT_HI = $21
-;GAMEOVER_NT_LO = $CB        ; row 14, col 11  => $21CB
-;GAMEOVER_LEN   = 9
+PRESS_NT_HI  = $22
+PRESS_NT_LO  = $4A    ; row 18, col 11  => $224B
+PRESS_NT_LEN = 11     ; "PRESS"(5) + space(1) + "START"(5)
+GAMEOVER_NT_HI = $21
+GAMEOVER_NT_LO = $CB        ; row 14, col 11  => $21CB
+GAMEOVER_LEN   = 9
 HUD_NT_HI      = $20
 HUD_HI_LO      = $22   ; row 1 col 2  ($2022)
 HUD_HI_DIG_LO  = $25   ; row 1 col 5  ($2025)
@@ -201,6 +221,7 @@ PLAYER_H = 16
 JAM_FR = 120        ; 1 second at 60fps (tweak)
 JAM_FRAMES_BASE    = 60      ; frames (pick 60 to start)
 
+INTRO_PAGE_FRAMES = 240 ; 4 seconds @60 fps
 ; ------------------------------------------------------------
 ; Enemy constants
 ; ------------------------------------------------------------
@@ -374,6 +395,18 @@ DEBUG_BOSS_SKIP = 1     ; set to 0 to compile out boss-skip hotkey
 
 .segment "ZEROPAGE"
 
+ppuctrl_shadow: .res 1
+page_y: .res 1
+
+
+; ---- Text queue pointers ----
+textq_w:     .res 1          ; write index
+textq_r:     .res 1          ; read index (used later for NMI flush)
+textq_hi:    .res 1
+textq_lo:    .res 1
+textq_len:   .res 1
+
+
 ; ---- Music ----
 music_cur:        .res 1   ; current song id ($FF = none)
 current_music:    .res 1   ; kept because your code references it somewhere
@@ -430,6 +463,9 @@ tmp6: .res 1
 tmp7: .res 1
 tmp8: .res 1
 
+ptr0:  .res 2
+ptr1:  .res 2
+
 hit_src_x: .res 1
 
 
@@ -467,6 +503,26 @@ sfxn_active: .res 1
 ; [BSS] BSS — EXACT SYMBOL SET (no deletions / no renames)
 ; ============================================================
 .segment "BSS"
+
+intro_page:  .res 1
+intro_timer: .res 1
+
+banner_built: .res 1
+tutorial_built: .res 1
+gameover_built: .res 1
+
+
+intro_built: .res 1     ; 0=needs VRAM build, 1=done
+
+hud_digits_buf: .res 5     ; for 5 digits (HI or SCORE)
+hud_hearts_buf: .res 19    
+
+; ---- Text queue buffer ----
+textq_buf: .res TEXTQ_BUF_SIZE
+
+title_built: .res 1   ; 0 = needs VRAM build, 1 = already built
+
+
 
 ; ---- Game state machine ----
 game_state:       .res 1
@@ -554,7 +610,6 @@ boss_x:           .res 1
 boss_y:           .res 1
 boss_hp:          .res 1
 boss_hp_max:      .res 1
-boss_hp_dirty:    .res 1
 boss_flash:       .res 1
 boss_fire_cd:     .res 1
 
@@ -635,35 +690,159 @@ tutorial_done: .res 1   ; 0 = not shown this run, 1 = already shown
 ; - UI strings / lookup tables
 ; NOTE: A few tiny helper routines may live near their data for convenience.
 ; ============================================================
-
-TitleStarfallTiles:
-  .byte TILE_S, TILE_T, TILE_A, TILE_R, TILE_F, TILE_A, TILE_L, TILE_L
-
-
-; ----------------------------
-; "PRESS START" prompt
-; ----------------------------
-PRESS_NT_HI  = $22
-PRESS_NT_LO  = $4B    ; row 18, col 11  => $224B
-PRESS_NT_LEN = 11     ; "PRESS"(5) + space(1) + "START"(5)
-
-PressStartTiles:
-  .byte TILE_P, TILE_R, TILE_E, TILE_S, TILE_S
-  .byte $00                ; space (blank tile)
-  .byte TILE_S, TILE_T, TILE_A, TILE_R, TILE_T
+.macro TEXTPAGE_LINE hi, lo, str
+  .byte hi, lo, <str, >str
+.endmacro
 
 
-; ----------------------------
-; "GAME OVER"
-; ----------------------------
-GAMEOVER_NT_HI = $21
-GAMEOVER_NT_LO = $CB        ; row 14, col 11  => $21CB
-GAMEOVER_LEN   = 9
+Str_TitleA: .byte TILE_S,TILE_T,TILE_A,TILE_R,TILE_F,TILE_A,TILE_L,TILE_L,$00
 
-GameOverTiles:
-  .byte TILE_G, TILE_A, TILE_M, TILE_E
-  .byte $00                ; space (blank tile)
-  .byte TILE_O, TILE_V, TILE_E, TILE_R
+TextPage_Title:
+  TEXTPAGE_LINE $21,$4C, Str_TitleA
+  .byte $00
+  
+
+Str_PressStart:
+  .byte TILE_P, TILE_R, TILE_E, TILE_S, TILE_S, TILE_SPACE
+  .byte TILE_S, TILE_T, TILE_A, TILE_R, TILE_T, $00
+
+Str_GameOver:
+  .byte TILE_G, TILE_A, TILE_M, TILE_E, TILE_SPACE
+  .byte TILE_O, TILE_V, TILE_E, TILE_R, $00
+
+
+
+BLINK_MAX_LEN = 16
+
+BlinkBlanks:
+  .repeat BLINK_MAX_LEN
+    .byte $00
+  .endrepeat
+
+; ============================================================
+; INTRO TEXT — FINAL (OPTION A)
+; ============================================================
+
+; -------- Page 1 --------
+Str_Intro1_A:
+  .byte TILE_T,TILE_H,TILE_E,TILE_SPACE
+  .byte TILE_C,TILE_O,TILE_R,TILE_E, TILE_S
+  .byte $00
+
+Str_Intro1_B:
+  .byte TILE_K,TILE_E,TILE_E,TILE_P,TILE_SPACE
+  .byte TILE_T,TILE_H,TILE_E,TILE_SPACE
+  .byte TILE_S,TILE_Y,TILE_S,TILE_T,TILE_E,TILE_M
+  .byte $00
+
+Str_Intro1_C:
+  .byte TILE_A,TILE_L,TILE_I,TILE_V,TILE_E
+  .byte $00
+
+
+; -------- Page 2 --------
+Str_Intro2A:
+  .byte TILE_T,TILE_H,TILE_E,TILE_Y,TILE_SPACE
+  .byte TILE_A,TILE_R,TILE_E,TILE_SPACE
+  .byte TILE_F,TILE_A,TILE_L,TILE_L,TILE_I,TILE_N,TILE_G,$00
+
+Str_Intro2B:
+  .byte TILE_I,TILE_N,TILE_SPACE
+  .byte TILE_E,TILE_N,TILE_E,TILE_M,TILE_Y,TILE_SPACE
+  .byte TILE_S,TILE_P,TILE_A,TILE_C,TILE_E,$00
+
+
+; -------- Page 3 --------
+Str_Intro3A:
+  .byte TILE_A,TILE_V,TILE_O,TILE_I,TILE_D,TILE_SPACE
+  .byte TILE_E,TILE_N,TILE_E,TILE_M,TILE_I,TILE_E,TILE_S,$00
+
+Str_Intro3B:
+  .byte TILE_C,TILE_A,TILE_T,TILE_C,TILE_H,TILE_SPACE
+  .byte TILE_C,TILE_O,TILE_R,TILE_E,TILE_S,$00
+
+
+; -------- Page 4 --------
+Str_Intro4:
+  .byte TILE_S,TILE_U,TILE_R,TILE_V,TILE_I,TILE_V,TILE_E,$00
+
+
+; ============================================================
+; INTRO PAGES (FINAL)
+; ============================================================
+
+TextPage_Intro1:
+  TEXTPAGE_LINE $21, $CB, Str_Intro1_A   ; row14 col11
+  TEXTPAGE_LINE $21, $E8, Str_Intro1_B   ; row15 col8
+  TEXTPAGE_LINE $22, $0D, Str_Intro1_C   ; row16 col13
+  .byte $00
+
+
+TextPage_Intro2:
+  TEXTPAGE_LINE $21, $C8, Str_Intro2A    ; row14 col8
+  TEXTPAGE_LINE $21, $E9, Str_Intro2B    ; row15 col9
+  .byte $00
+
+
+TextPage_Intro3:
+  TEXTPAGE_LINE $21, $CA, Str_Intro3A    ; row14 col10
+  TEXTPAGE_LINE $21, $EB, Str_Intro3B    ; row15 col11
+  .byte $00
+
+
+TextPage_Intro4:
+  TEXTPAGE_LINE $21, $EC, Str_Intro4     ; row15 col12 (less “jump”)
+  .byte $00
+
+
+
+; example: intro_page = 0..3
+
+LoadIntroPage:
+  lda intro_page
+  asl
+  tax
+  lda IntroPageTable,x
+  sta ptr1
+  lda IntroPageTable+1,x
+  sta ptr1+1
+  jsr Text_DrawPage_Manual
+  rts
+
+IntroPageTable:
+  .word TextPage_Intro1
+  .word TextPage_Intro2
+  .word TextPage_Intro3
+  .word TextPage_Intro4
+
+
+; ============================================================
+; TUTORIAL PAGE 1 (text only; icons are sprites)
+; ============================================================
+
+Str_TutEnemies:
+  .byte TILE_F,TILE_I,TILE_R,TILE_E,TILE_SPACE
+  .byte TILE_A,TILE_T,TILE_SPACE
+  .byte TILE_E,TILE_N,TILE_E,TILE_M,TILE_I,TILE_E,TILE_S,$00
+
+Str_TutCores:
+  .byte TILE_D,TILE_O,TILE_SPACE
+  .byte TILE_N,TILE_O,TILE_T,TILE_SPACE
+  .byte TILE_F,TILE_I,TILE_R,TILE_E,TILE_SPACE
+  .byte TILE_A,TILE_T,TILE_SPACE
+  .byte TILE_C,TILE_O,TILE_R,TILE_E,TILE_S,$00
+
+TextPage_Tutorial1:
+  ; Row 9, Col 8  (center 15 chars)
+  TEXTPAGE_LINE $21, $28, Str_TutEnemies   ; $2120 + $08 = $2128
+
+  ; Row 16, Col 6 (center 20 chars)
+  TEXTPAGE_LINE $22, $06, Str_TutCores     ; $2200 + $06 = $2206
+
+  .byte $00
+
+
+
 
 ; ----------------------------
 ; Sound Data
@@ -1360,6 +1539,111 @@ OAM_BUF: .res 256
 ; ----------------------------
 .segment "CODE"
 
+TextQ_Clear:
+  lda #$00
+  sta textq_w
+  sta textq_r
+  rts
+
+; A = byte to push
+TextQ_PushByte:
+  ldx textq_w
+  cpx #TEXTQ_BUF_SIZE
+  bcs @drop
+  sta textq_buf,x
+  inx
+  stx textq_w
+@drop:
+  rts
+
+TextQ_QueueWrite:
+  sta textq_hi
+  stx textq_lo
+  sty textq_len
+
+  lda textq_hi
+  jsr TextQ_PushByte
+
+  lda textq_lo
+  jsr TextQ_PushByte
+
+  lda textq_len
+  jsr TextQ_PushByte
+
+  ldy #$00
+@data:
+  cpy textq_len
+  bcs @done
+  lda (ptr0),y
+  jsr TextQ_PushByte
+  iny
+  bne @data
+@done:
+  rts
+
+TextQ_End:
+  lda #$00
+  jsr TextQ_PushByte   ; hi (ignored)
+  lda #$00
+  jsr TextQ_PushByte   ; lo (ignored)
+  lda #TEXTQ_END_MARK
+  jsr TextQ_PushByte   ; len=0 => terminator
+  rts
+
+; ------------------------------------------------------------
+; TextQ_Flush_ManualVRAM
+; - Flushes queued commands to PPU right now (NOT NMI)
+; - Call only with rendering OFF and during vblank-safe window
+; Uses: A,X,Y
+; ------------------------------------------------------------
+TextQ_Flush_ManualVRAM:
+  ldy #$00
+  sty textq_r
+
+@next_cmd:
+  ldy textq_r
+  cpy textq_w
+  beq @done
+
+  ; hi
+  lda textq_buf,y
+  iny
+  sta textq_hi
+
+  ; lo
+  lda textq_buf,y
+  iny
+  sta textq_lo
+
+  ; len
+  lda textq_buf,y
+  iny
+  tax
+  beq @done_cmds         ; len=0 end marker
+
+  ; set PPUADDR
+  lda PPUSTATUS
+  lda textq_hi
+  sta PPUADDR
+  lda textq_lo
+  sta PPUADDR
+
+@write:
+  lda textq_buf,y
+  sta PPUDATA
+  iny
+  dex
+  bne @write
+
+  sty textq_r
+  jmp @next_cmd
+
+@done_cmds:
+  ; reset queue after flushing
+  jsr TextQ_Clear
+@done:
+  rts
+
 ; ------------------------------------------------------------
 ; [RESET]
 ; - Hardware init
@@ -1386,6 +1670,7 @@ RESET:
 
   ; PPU off
   lda #$00
+  sta ppuctrl_shadow
   sta PPUCTRL
   sta PPUMASK
 
@@ -1488,6 +1773,10 @@ InitGameVars:
   sta game_state
 
   lda #$00
+sta title_built
+
+
+  lda #$00
   sta press_visible
   sta title_visible
   sta gameover_visible
@@ -1507,6 +1796,8 @@ InitGameVars:
   lda #$00
   sta debug_force_type
   sta debug_mode
+
+  
   rts
 
 ; ------------------------------------------------------------
@@ -1519,6 +1810,7 @@ InitGameVars:
 InitVRAMAndUI:
   ; keep rendering OFF while writing VRAM
   lda #$00
+  sta ppuctrl_shadow
   sta PPUCTRL
   sta PPUMASK
 
@@ -1558,6 +1850,7 @@ InitVRAMAndUI:
 
   ; enable NMI + rendering
   lda #%10000000      ; NMI on
+  sta ppuctrl_shadow
   sta PPUCTRL
   lda #PPUMASK_BG_SPR ; BG + sprites + show left 8px
   sta PPUMASK
@@ -1568,10 +1861,6 @@ InitVRAMAndUI:
 ; [NMI]
 ; ----------------------------
 
-; ------------------------------------------------------------
-; STABLE ZONE — NMI / vblank timing
-; Playtest build: avoid logic/timing changes here.
-; ------------------------------------------------------------
 NMI:
   pha
   txa
@@ -1593,186 +1882,9 @@ jsr NextRand
   lda #>OAM_BUF     ; high byte of the actual buffer location
   sta OAMDMA
 
-
-; ---- TITLE BG ("STARFALL") show/hide ----
-  lda game_state
-  cmp #STATE_TITLE
-  bne @title_not_title
-
-@title_is_title:
-  lda title_visible
-  cmp #$01
-  beq @title_done
-  lda #$01
-  sta title_visible
-  lda #$01
-  jsr WriteTitleStarfallBG
-  jmp @title_done
-
-@title_not_title:
-  lda title_visible
-  beq @title_done
-  lda #$00
-  sta title_visible
-  lda #$00
-  jsr WriteTitleStarfallBG
-
-@title_done:
-
-
-    ; ---- PRESS START BG blink (TITLE only) ----
-  lda game_state
-  cmp #STATE_TITLE
-  bne @not_title
-
-  ; visible? (blink bit)
-  lda frame_lo
-  and #$10
-  beq @want_hidden
-
-@want_shown:
-  lda press_visible
-  cmp #$01
-  beq @ps_done          ; already shown
-  lda #$01
-  sta press_visible
-  lda #$01
-  jsr WritePressStartBG
-  jmp @ps_done
-
-@want_hidden:
-  lda press_visible
-  beq @ps_done          ; already hidden
-  lda #$00
-  sta press_visible
-  lda #$00
-  jsr WritePressStartBG
-  jmp @ps_done
-
-@not_title:
-  ; if we left title, ensure it's hidden once
-  lda press_visible
-  beq @ps_done
-  lda #$00
-  sta press_visible
-  lda #$00
-  jsr WritePressStartBG
-
-@ps_done:
-
-; ---- GAME OVER BG blink once on entry ----
-  lda game_state
-  cmp #STATE_OVER
-  bne @go_not_over
-
-  ; entering OVER? (start blink sequence once)
-  lda gameover_visible
-  cmp #$01
-  beq @go_in_over_cont
-
-  ; first frame we notice OVER: mark visible + start blink timer
-  lda #$01
-  sta gameover_visible
-
-  lda #$30              ; total blink duration in frames (~48)
-  sta gameover_blink_timer
-  lda #$01
-  sta gameover_blink_phase
-
-  ; draw it immediately
-  lda #$01
-  jsr WriteGameOverBG
-  jmp @go_done
-
-
-@go_in_over_cont:
-  ; if we're blinking, update show/hide based on timer
-  lda gameover_blink_phase
-  beq @go_done          ; blink already finished => leave steady
-
-  lda gameover_blink_timer
-  beq @go_finish_blink
-  dec gameover_blink_timer
-
-  ; timer ranges:
-  ; $30..$11 => shown
-  ; $10..$01 => hidden
-  lda gameover_blink_timer
-  cmp #$11
-  bcs @go_want_shown
-
-@go_want_hidden:
-  lda #$00
-  jsr WriteGameOverBG
-  jmp @go_done
-
-@go_want_shown:
-  lda #$01
-  jsr WriteGameOverBG
-  jmp @go_done
-
-@go_finish_blink:
-  lda #$00
-  sta gameover_blink_phase
-  lda #$01
-  jsr WriteGameOverBG
-  jmp @go_done
-
-
-@go_not_over:
-  ; leaving OVER: ensure hidden + reset blink state
-  lda gameover_visible
-  beq @go_done
-
-  lda #$00
-  sta gameover_visible
-  sta gameover_blink_phase
-  sta gameover_blink_timer
-
-  lda #$00
-  jsr WriteGameOverBG
-
-
-@go_done:
-
-  ; --------------------------------------------
-  ; Tutorial timer (auto-hide)
-  ; --------------------------------------------
-  lda tutorial_timer
-  beq @tut_timer_done
-
-  dec tutorial_timer
-  bne @tut_timer_done
-
-  ; timer just hit 0 -> request clear once
-  lda #$00
-  sta tutorial_visible
-  lda #$01
-  sta tutorial_dirty
-
-@tut_timer_done:
-
-  ; --------------------------------------------
-  ; Tutorial BG draw/clear (one-shot)
-  ; --------------------------------------------
-  lda tutorial_dirty
-  beq @tut_done
-
-  lda #$00
-  sta tutorial_dirty
-
-  lda tutorial_visible
-  beq @tut_clear
-
-@tut_draw:
-  jsr DrawTutorialBG
-  jmp @tut_done
-
-@tut_clear:
-  jsr ClearTutorialBG
-
-@tut_done:
-
+  
+ jsr TextQ_NMI_Flush
+  jsr HUD_NMI_Update
 
 
   lda screen_flash_timer      ; screen_flash_timer: nonzero => temporarily force palette/brightness effect
@@ -1807,34 +1919,6 @@ jsr NextRand
 
     jsr Pause_NMI_Update
 
-  jsr HUD_NMI_Update
-
-  lda game_state
-  cmp #STATE_BOSS
-  bne :+
-
-    lda boss_alive
-    beq :+
-
-    lda boss_hp_dirty
-    beq :+
-      lda #$00
-      sta boss_hp_dirty
-      jsr WriteBossHPBarBG
-:
-
-
-  lda boss_hp_clear_pending
-  beq @boss_hp_clear_done
-
-  lda #FLAG_CLEAR
-  sta boss_hp_clear_pending
-
-
-  jsr ClearBossHPBG          ; writes blanks to the boss HP bar area
-
-@boss_hp_clear_done:
-
 
 
   pla
@@ -1849,9 +1933,12 @@ jsr NextRand
   sta PPUSCROLL      ; X = 0
   sta PPUSCROLL      ; Y = 0
 
-  ; ensure base nametable is $2000 (optional but recommended)
-  lda #%10000000     ; NMI on, nametable 0
+  lda ppuctrl_shadow
+  and #%11111100      ; keep everything except nametable bits
+  ora #%10000000      ; ensure NMI enabled
+  sta ppuctrl_shadow
   sta PPUCTRL
+
 
 
 
@@ -1928,8 +2015,16 @@ jsr DebugUpdate
   bne :+
     jmp @state_title
   :
+
+  cmp #STATE_INTRO
+  bne :+
+    jmp @state_intro
+  :
+
   cmp #STATE_TUTORIAL
-  beq @state_tutorial
+  bne :+
+    jmp @state_tutorial
+  :
 
   cmp #STATE_BANNER
   bne :+
@@ -1954,107 +2049,313 @@ jsr DebugUpdate
 
 ; ----------------------------
 ; STATE: TITLE
-; - Blink PRESS START BG tiles (handled via frame counter / visibility flag)
-; - Start game on START
-; - Draw title sprites + any overlays
+; - Builds title screen once (render-off) using TextPage_Title
+; - Blinks "PRESS START" using queue + string system
+; - START enters intro
 ; ----------------------------
 @state_title:
+
+  ; ---- music ----
   lda #MUSIC_TITLE
   cmp current_music
   beq :+
     sta current_music
     jsr Music_Play
 :
+
   jsr NextRand
 
+  ; --------------------------------------------------
+  ; Build TITLE screen once (static page)
+  ; --------------------------------------------------
+  lda title_built
+  bne @title_run
 
+    jsr PPU_BeginVRAM
+      jsr ClearNametable0
+      jsr DrawStarfieldNT0
+      jsr ClearAttributesNT0
+
+      ; draw static title text via page system
+      lda #<TextPage_Title
+      sta ptr1
+      lda #>TextPage_Title
+      sta ptr1+1
+      jsr Text_DrawPage_Manual
+    jsr PPU_EndVRAM
+
+    ; init PRESS START blink state
+    lda #$00
+    sta press_visible
+
+    lda #$01
+    sta title_built
+
+@title_run:
+
+  ; --------------------------------------------------
+  ; PRESS START blink (queue-based, main thread)
+  ; --------------------------------------------------
+  lda frame_lo
+  and #$10
+  beq @ps_hide
+
+@ps_show:
+  lda press_visible
+  cmp #$01
+  beq @ps_done
+  lda #$01
+  sta press_visible
+
+  ; queue "PRESS START"
+  lda #<Str_PressStart
+  sta ptr0
+  lda #>Str_PressStart
+  sta ptr0+1
+  lda #PRESS_NT_HI
+  ldx #PRESS_NT_LO
+  jsr TextQ_QueueWriteZ
+  jmp @ps_done
+
+@ps_hide:
+  lda press_visible
+  beq @ps_done
+  lda #$00
+  sta press_visible
+
+  ; queue blanks
+  lda #<BlinkBlanks
+  sta ptr0
+  lda #>BlinkBlanks
+  sta ptr0+1
+  lda #PRESS_NT_HI
+  ldx #PRESS_NT_LO
+  ldy #PRESS_NT_LEN
+  jsr TextQ_QueueWrite
+
+@ps_done:
+
+  ; --------------------------------------------------
+  ; Input: START -> Intro
+  ; --------------------------------------------------
   lda pad1_new
   and #BTN_START
-  beq :+
+  beq @title_draw
 
-     jsr ReseedRNG
-
-    ; --- redraw starfield safely (brief render-off) ---
-    lda #$00
-    sta PPUMASK
-    jsr WaitVBlank
-
-  jsr PPU_BeginVRAM
-  jsr ClearNametable0
-  jsr DrawStarfieldNT0
-  jsr ClearAttributesNT0
-  jsr ClearNametable1
-  jsr DrawStarfieldNT1
-  jsr ClearAttributesNT1
-  jsr PPU_EndVRAM
-
-
-    lda #PPUMASK_BG_SPR
-    sta PPUMASK
-
-    
+    jsr ReseedRNG
     jsr ResetRun
-    jsr EnterLevelStart
+    jsr EnterIntro
 
-:
+@title_draw:
+  ; end-of-frame queue terminator (once per frame!)
+  jsr TextQ_End
 
   jsr BuildOAM
   jmp MainLoop
 
+; ----------------------------
+; STATE: INTRO (multi-page)
+; - Draw one page at a time (render-off)
+; - Advance on A/START, or auto-advance by timer
+; ----------------------------
+@state_intro:
 
+  ; --- build once on entry ---
+  lda intro_built
+  bne @intro_run
+
+  lda #$00
+  sta intro_page
+
+  lda #INTRO_PAGE_FRAMES
+  sta intro_timer
+
+
+  ; draw starfield + first page
+  jsr PPU_BeginVRAM
+    jsr ClearNametable0
+    jsr DrawStarfieldNT0
+    jsr ClearAttributesNT0
+
+    ; ptr1 = IntroPageTable[intro_page]
+    ldx intro_page
+    txa
+    asl                 ; *2 for word table
+    tax
+    lda IntroPageTable,x
+    sta ptr1
+    lda IntroPageTable+1,x
+    sta ptr1+1
+    jsr Text_DrawPage_Manual
+  jsr PPU_EndVRAM
+
+  lda #$01
+  sta intro_built
+
+@intro_run:
+
+  ; --- auto-advance timer ---
+  lda intro_timer
+  beq @maybe_advance
+  dec intro_timer
+
+@maybe_advance:
+
+  ; advance if timer hit 0 OR player presses A/START
+  lda pad1_new
+  and #(BTN_A | BTN_START)
+  bne @advance
+
+  lda intro_timer
+  bne @intro_render
+  ; timer == 0 => advance
+  jmp @advance
+
+@advance:
+  ; next page
+  inc intro_page
+
+  lda intro_page
+  cmp #4
+  bcc @draw_next
+
+  ; finished intro -> go to tutorial
+  lda #$00
+  sta tutorial_built
+  lda #240
+  sta tutorial_timer
+
+  lda #STATE_TUTORIAL
+  sta game_state
+
+  jmp @intro_render   ; skip drawing this frame as intro
+
+@draw_next:
+  lda #INTRO_PAGE_FRAMES
+  sta intro_timer
+
+  ; redraw starfield + new page (simple and safe)
+  jsr PPU_BeginVRAM
+    jsr ClearNametable0
+    jsr DrawStarfieldNT0
+    jsr ClearAttributesNT0
+
+    ldx intro_page
+    txa
+    asl
+    tax
+    lda IntroPageTable,x
+    sta ptr1
+    lda IntroPageTable+1,x
+    sta ptr1+1
+    jsr Text_DrawPage_Manual
+  jsr PPU_EndVRAM
+
+@intro_render:
+  jsr BuildOAM
+  jmp MainLoop
+
+
+; ---------------------------
+; STATE: TUTORIAL
+; ---------------------------
 @state_tutorial:
-  ; optional: keep player moving around while reading
+  lda tutorial_built
+  bne @tut_run
+
+    jsr PPU_BeginVRAM
+      jsr ClearNametable0
+      jsr DrawStarfieldNT0
+      jsr ClearAttributesNT0
+
+      lda #<TextPage_Tutorial1
+      sta ptr1
+      lda #>TextPage_Tutorial1
+      sta ptr1+1
+      jsr Text_DrawPage_Manual
+    jsr PPU_EndVRAM
+
+    lda #$01
+    sta tutorial_built
+
+
+@tut_run:
   jsr UpdatePlayer
 
-  ; allow START to skip tutorial early
+  lda tutorial_timer
+  beq :+
+    dec tutorial_timer
+:
+
   lda pad1_new
   and #BTN_START
   beq :+
     lda #$00
-    sta tutorial_timer        ; force it to end
+    sta tutorial_timer
 :
 
-  ; when timer hits 0, leave tutorial
   lda tutorial_timer
   bne @tut_render
 
-  ; --- timer is 0: exit tutorial ---
-
-  ; request clear (one-shot)
-  lda tutorial_visible
-  beq @tut_exit
-  lda #$00
-  sta tutorial_visible
-  lda #$01
-  sta tutorial_dirty          ; NMI clears it
-
-@tut_exit:
-  ; mark tutorial as shown for this run
+  ; --- timer hit 0: leave tutorial ---
   lda #$01
   sta tutorial_done
 
-  ; go to banner (tutorial is before banner now)
-  lda #60
+  lda #$00
+  sta tutorial_built
+
+  jsr EnterLevelStart
+  lda #120
   sta level_banner
+
+  lda #$00
+  sta banner_built
+
   lda #STATE_BANNER
   sta game_state
 
+  jmp @state_banner      ; <-- IMPORTANT: do not fall into @tut_render
+
+
+
 @tut_render:
+  jsr TextQ_End
   jsr BuildOAM
   jmp MainLoop
+
+
 
 ; ----------------------------
 ; STATE: BANNER (LEVEL X)
 ; “each frame”: count down banner timer
 ; ----------------------------
 @state_banner:
-  lda #$01
-  jsr famistudio_music_pause
-  jsr ClearPlayerBullets  
-  jsr UpdatePlayer          ; optional: allow movement during banner
-  jsr BannerUpdate          ; <-- THIS is the “each frame” part
-  jsr BuildOAM              ; BuildOAM should call DrawLevelBannerSprites when banner active
+
+  lda banner_built
+  bne @banner_run
+
+    jsr PPU_BeginVRAM
+      jsr ClearNametable0
+      jsr DrawStarfieldNT0
+      jsr ClearAttributesNT0
+
+      ; (optional) draw any banner text via page system here
+      ; lda #<TextPage_Banner
+      ; sta ptr1
+      ; lda #>TextPage_Banner
+      ; sta ptr1+1
+      ; jsr Text_DrawPage_Manual
+    jsr PPU_EndVRAM
+
+    lda #$01
+    sta banner_built
+
+@banner_run:
+  jsr BannerUpdate
+  jsr TextQ_End
+  jsr BuildOAM
   jmp MainLoop
+
 
 
 
@@ -2063,6 +2364,9 @@ jsr DebugUpdate
 ; “each frame”: decrement boss_timer, transition to BOSS at 0
 ; ----------------------------
 @state_play:
+
+  lda #$01
+  sta hud_dirty
 
 
   lda #$00
@@ -2111,13 +2415,19 @@ jsr DebugUpdate
   jsr PlayUpdate
 
 @play_render_only:
+  jsr TextQ_End
   jsr BuildOAM
   jmp MainLoop
+
 
 ; ----------------------------
 ; STATE: BOSS 
 ; ----------------------------
 @state_boss:
+
+  lda #$01
+  sta hud_dirty
+
   lda #$00
   jsr famistudio_music_pause
   lda #MUSIC_BOSS
@@ -2165,6 +2475,7 @@ jsr DebugUpdate
   jsr CollideBulletsBoss
 
 @boss_render_only:
+  jsr TextQ_End
   jsr BuildOAM
   jmp MainLoop
 
@@ -2172,34 +2483,131 @@ jsr DebugUpdate
 
 ; ----------------------------
 ; STATE: OVER (Game Over)
-; - Accepts START to restart (ResetRun)
-; - Game Over BG blink sequence is driven in NMI using gameover_visible/timers
-; - Draws stats / game over sprites via BuildOAM
+; - Build OVER screen once (render-off)
+; - Blink "GAME OVER" via queue system (main thread)
+; - START => ReturnToTitle
 ; ----------------------------
 @state_over:
- 
-jsr famistudio_music_stop
 
+  ; ---- one-time build on entry ----
+  lda gameover_built
+  bne @over_run
+
+    jsr PPU_BeginVRAM
+      jsr ClearNametable0
+      jsr DrawStarfieldNT0
+      jsr ClearAttributesNT0
+
+      ; optional: draw other static OVER page lines
+      ;lda #<TextPage_Over
+      ;sta ptr1
+      ;lda #>TextPage_Over
+      ;sta ptr1+1
+      ;jsr Text_DrawPage_Manual
+    jsr PPU_EndVRAM
+
+    lda #$01
+    sta gameover_built
+
+    ; init blink state
+    lda #$00
+    sta gameover_visible
+    lda #$30
+    sta gameover_blink_timer
+    lda #$01
+    sta gameover_blink_phase
+
+@over_run:
+
+  ; ---- GAME OVER blink (queue-based) ----
+  lda gameover_blink_phase
+  beq @go_steady
+
+  lda gameover_blink_timer
+  beq @go_finish
+  dec gameover_blink_timer
+
+  lda gameover_blink_timer
+  cmp #$11
+  bcs @go_want_shown
+
+@go_want_hidden:
+  lda gameover_visible
+  beq @go_done
+  lda #$00
+  sta gameover_visible
+
+  ; hide: queue blanks (fixed length)
+  lda #<BlinkBlanks
+  sta ptr0
+  lda #>BlinkBlanks
+  sta ptr0+1
+  lda #GAMEOVER_NT_HI
+  ldx #GAMEOVER_NT_LO
+  ldy #GAMEOVER_LEN
+  jsr TextQ_QueueWrite
+  jmp @go_done
+
+@go_want_shown:
+  lda gameover_visible
+  cmp #$01
+  beq @go_done
+  lda #$01
+  sta gameover_visible
+
+  ; show: queue 0-terminated string
+  lda #<Str_GameOver
+  sta ptr0
+  lda #>Str_GameOver
+  sta ptr0+1
+  lda #GAMEOVER_NT_HI
+  ldx #GAMEOVER_NT_LO
+  jsr TextQ_QueueWriteZ
+  jmp @go_done
+
+@go_finish:
+  lda #$00
+  sta gameover_blink_phase
+  ; fallthrough
+
+@go_steady:
+  ; ensure shown once after blink ends
+  lda gameover_visible
+  cmp #$01
+  beq @go_done
+  lda #$01
+  sta gameover_visible
+
+  lda #<Str_GameOver
+  sta ptr0
+  lda #>Str_GameOver
+  sta ptr0+1
+  lda #GAMEOVER_NT_HI
+  ldx #GAMEOVER_NT_LO
+  jsr TextQ_QueueWriteZ
+
+@go_done:
+
+  ; ---- input: START to return to title ----
   lda pad1_new
   and #BTN_START
   beq @over_draw
-  jsr ReseedRNG
     lda #$00
-  sta screen_flash_timer
-
-    lda pad1_new
-  and #BTN_START
-  beq :+
+    sta gameover_built       ; so OVER rebuilds next time
     jsr ReturnToTitle
-:
 
-  
 @over_draw:
+  jsr TextQ_End              ; if you're doing "once per frame globally", remove this line
   jsr BuildOAM
   jmp MainLoop
 
 
 
+
+
+; ---------------------------
+; STATE: PAUSE
+; ---------------------------
 @state_pause:
   lda pad1_new
   and #BTN_START
@@ -2220,8 +2628,10 @@ jsr famistudio_music_stop
     sta pad1_prev
 :
 
+  jsr TextQ_End
   jsr BuildOAM
   jmp MainLoop
+
 
 
 ;=========================================================
@@ -2229,9 +2639,394 @@ jsr famistudio_music_stop
 ; (input/rng/player/bullets/enemies/boss/collisions)
 ;=========================================================
 
+; ------------------------------------------------------------
+; TextQ_QueueWriteZ
+; - Queues a VRAM write for a 0-terminated string at (ptr0)
+; - Inputs: A=hi, X=lo, ptr0=str
+; - Uses: Y, tmp0
+; ------------------------------------------------------------
+TextQ_QueueWriteZ:
+  sta textq_hi
+  stx textq_lo
+
+  ; tmp0 = len
+  ldy #$00
+@count:
+  lda (ptr0),y
+  beq @count_done
+  iny
+  bne @count
+@count_done:
+  sty tmp0
+
+  ; queue header: hi, lo, len
+  lda textq_hi
+  jsr TextQ_PushByte
+  lda textq_lo
+  jsr TextQ_PushByte
+  lda tmp0
+  jsr TextQ_PushByte
+
+  ; queue data bytes
+  ldy #$00
+@data:
+  cpy tmp0
+  bcs @done
+  lda (ptr0),y
+  jsr TextQ_PushByte
+  iny
+  bne @data
+
+@done:
+  rts
+
+
+
+
+
+; ------------------------------------------------------------
+; TextQ_NMI_Flush
+; - Drains queued VRAM write commands safely in NMI
+; - Command: hi, lo, len, data[len]
+; - End marker: len=0
+; - Processes whole commands only (no partial command writes)
+; - Uses: A,X,Y, tmp0,tmp1
+; ------------------------------------------------------------
+TextQ_NMI_Flush:
+  ldy textq_r
+  cpy textq_w
+  beq @done
+
+  lda #$00
+  sta tmp0              ; tmp0 = bytes_used this NMI
+
+@try_cmd:
+  ldy textq_r
+  cpy textq_w
+  beq @done
+
+  ; Peek command header
+  lda textq_buf,y       ; hi
+  sta textq_hi
+  iny
+  lda textq_buf,y       ; lo
+  sta textq_lo
+  iny
+  lda textq_buf,y       ; len
+  tax
+  beq @end_marker       ; len=0 => done
+
+  ; total bytes this command will consume in queue = 3 + len
+  txa
+  clc
+  adc #3
+  sta tmp1              ; tmp1 = cmd_size
+
+  ; if bytes_used + cmd_size > BUDGET, stop this frame
+  lda tmp0
+  clc
+  adc tmp1
+  cmp #TEXTQ_FLUSH_BUDGET
+  bcc @do_cmd
+  beq @do_cmd
+  rts                   ; leave for next NMI
+
+@do_cmd:
+  ; commit bytes_used += cmd_size
+  lda tmp0
+  clc
+  adc tmp1
+  sta tmp0
+
+  ; advance a working index to start of data
+  ldy textq_r
+  iny                   ; skip hi
+  iny                   ; skip lo
+  iny                   ; skip len  => Y now at first data byte
+
+  ; set PPUADDR
+  lda PPUSTATUS
+  lda textq_hi
+  sta PPUADDR
+  lda textq_lo
+  sta PPUADDR
+
+@write_data:
+  lda textq_buf,y
+  sta PPUDATA
+  iny
+  dex
+  bne @write_data
+
+  ; update read pointer to next command
+  sty textq_r
+  jmp @try_cmd
+
+@end_marker:
+  jsr TextQ_Clear       ; reset queue entirely
+@done:
+  rts
+
+; ------------------------------------------------------------
+; TextQ_QueueStrZ (SAFE)
+; - A = hi, X = lo, ptr0 -> 00-terminated tile string
+; ------------------------------------------------------------
+TextQ_QueueStrZ:
+  sta textq_hi
+  stx textq_lo
+
+  ldy #$00
+@count:
+  lda (ptr0),y
+  beq @got_len
+  iny
+  cpy #64              ; CAP: max 64 chars
+  bcc @count
+@got_len:
+  sty textq_len
+
+  lda textq_hi
+  ldx textq_lo
+  ldy textq_len
+  jsr TextQ_QueueWrite
+  rts
+
+
+
+; ------------------------------------------------------------
+; Title_DrawPrompt_Manual
+; Call only during render-off safe block (like your START block now)
+; ------------------------------------------------------------
+Title_DrawPrompt_Manual:
+  jsr TextQ_Clear
+
+  lda #<Str_PressStart
+  sta ptr0
+  lda #>Str_PressStart
+  sta ptr0+1
+
+  lda #$22
+  ldx #$4B          ; $224B PRESS START spot
+  jsr TextQ_QueueStrZ
+
+  jsr TextQ_End
+  jsr TextQ_Flush_ManualVRAM
+  rts
+
+; ------------------------------------------------------------
+; Text_DrawPage_Manual (SAFE)
+; - ptr1 -> page table: [hi][lo][ptrLo][ptrHi] ... [00]
+; - Rendering MUST already be off
+; ------------------------------------------------------------
+Text_DrawPage_Manual:
+  jsr TextQ_Clear
+
+  lda #$00
+  sta page_y
+
+@next:
+  ldy page_y
+  lda (ptr1),y          ; hi
+  beq @done
+  sta textq_hi
+  iny
+
+  lda (ptr1),y          ; lo
+  sta textq_lo
+  iny
+
+  lda (ptr1),y          ; str lo
+  sta ptr0
+  iny
+  lda (ptr1),y          ; str hi
+  sta ptr0+1
+  iny
+
+  ; save updated cursor BEFORE calling anything
+  sty page_y
+
+  lda textq_hi
+  ldx textq_lo
+  jsr TextQ_QueueStrZ    ; (this may clobber Y — fine now)
+
+  jmp @next
+
+@done:
+  jsr TextQ_End
+  jsr TextQ_Flush_ManualVRAM
+  rts
+
+
+
+
 ; ----------------------------
 ; HELPERS
 ; ----------------------------
+
+; Inputs: A=hi, X=lo, Y=len (must be <= BLINK_MAX_LEN)
+TextQ_QueueBlanks:
+  lda #<BlinkBlanks
+  sta ptr0
+  lda #>BlinkBlanks
+  sta ptr0+1
+  ; reuse existing fixed-len queue
+  ; A/X/Y already set by caller? We'll assume caller passes hi/lo/len.
+  ; If you want, wrap it, but easiest is:
+  jsr TextQ_QueueWrite
+  rts
+
+
+; ptr0 -> hud_digits_buf, fills 5 tiles = DIGIT_TILE_BASE + digit
+HUD_FillDigits5:
+  lda tmp0       ; digit0
+  clc
+  adc #DIGIT_TILE_BASE
+  sta hud_digits_buf+0
+  lda tmp1
+  clc
+  adc #DIGIT_TILE_BASE
+  sta hud_digits_buf+1
+  lda tmp2
+  clc
+  adc #DIGIT_TILE_BASE
+  sta hud_digits_buf+2
+  lda tmp3
+  clc
+  adc #DIGIT_TILE_BASE
+  sta hud_digits_buf+3
+  lda tmp4
+  clc
+  adc #DIGIT_TILE_BASE
+  sta hud_digits_buf+4
+  rts
+
+HUD_FillHearts:
+  ; tmp0 = lives clamped
+  lda lives
+  cmp #HUD_MAX_LIVES
+  bcc :+
+    lda #HUD_MAX_LIVES
+:
+  sta tmp0
+
+  ldx #$00        ; heart index 0..HUD_MAX_LIVES-1
+  ldy #$00        ; write index into hud_hearts_buf
+
+@hloop:
+  cpx #HUD_MAX_LIVES
+  bcs @done
+
+  ; if lives >= (X+1) => heart else space
+  txa
+  clc
+  adc #$01
+  sta tmp1
+
+  lda tmp0
+  cmp tmp1
+  bcc @blank
+    lda #HEART_TILE
+    bne @write
+@blank:
+  lda #TILE_SPACE
+
+@write:
+  sta hud_hearts_buf,y
+  iny
+
+  inx
+  cpx #HUD_MAX_LIVES
+  beq @hloop       ; last heart: no trailing space
+
+  lda #TILE_SPACE
+  sta hud_hearts_buf,y
+  iny
+  jmp @hloop
+
+@done:
+  rts
+
+HudText_HI: .byte TILE_H, TILE_I, TILE_SPACE
+HudText_SC: .byte TILE_S, TILE_C, TILE_SPACE
+
+HUD_QueueUpdate:
+  ; ---- queue "HI " ----
+  lda #<HudText_HI
+  sta ptr0
+  lda #>HudText_HI
+  sta ptr0+1
+  lda #HUD_NT_HI
+  ldx #HUD_HI_LO
+  ldy #3
+  jsr TextQ_QueueWrite
+
+  ; ---- queue HI digits ----
+  lda hi_d0
+  sta tmp0
+  lda hi_d1
+  sta tmp1
+  lda hi_d2
+  sta tmp2
+  lda hi_d3
+  sta tmp3
+  lda hi_d4
+  sta tmp4
+  jsr HUD_FillDigits5
+
+  lda #<hud_digits_buf
+  sta ptr0
+  lda #>hud_digits_buf
+  sta ptr0+1
+  lda #HUD_NT_HI
+  ldx #HUD_HI_DIG_LO
+  ldy #5
+  jsr TextQ_QueueWrite
+
+  ; ---- queue "SC " ----
+  lda #<HudText_SC
+  sta ptr0
+  lda #>HudText_SC
+  sta ptr0+1
+  lda #HUD_NT_HI
+  ldx #HUD_SC_LO
+  ldy #3
+  jsr TextQ_QueueWrite
+
+  ; ---- queue SCORE digits ----
+  lda score_d0
+  sta tmp0
+  lda score_d1
+  sta tmp1
+  lda score_d2
+  sta tmp2
+  lda score_d3
+  sta tmp3
+  lda score_d4
+  sta tmp4
+  jsr HUD_FillDigits5
+
+  lda #<hud_digits_buf
+  sta ptr0
+  lda #>hud_digits_buf
+  sta ptr0+1
+  lda #HUD_NT_HI
+  ldx #HUD_SC_DIG_LO
+  ldy #5
+  jsr TextQ_QueueWrite
+
+  ; ---- queue hearts ----
+  jsr HUD_FillHearts
+  lda #<hud_hearts_buf
+  sta ptr0
+  lda #>hud_hearts_buf
+  sta ptr0+1
+  lda #HUD_NT_HI
+  ldx #HUD_LIVES_LO
+  ldy #(HUD_MAX_LIVES*2-1)
+  jsr TextQ_QueueWrite
+
+  rts
+
 WaitFrame:
   lda #$00
   sta nmi_ready
@@ -4013,32 +4808,34 @@ RedrawStarfieldOnRestart:
   rts
 
 ReturnToTitle:
-  ; --- reset title-specific flags so title draws again ---
   lda #$00
   sta title_inited
+  sta title_built
   sta press_visible
   sta title_visible
+
+  sta intro_built
+  sta tutorial_built     
+  sta banner_built       
+  sta gameover_built     
+
   sta gameover_visible
   sta gameover_blink_timer
   sta gameover_blink_phase
 
-  ; lda #$00
-  ; sta scroll_x
-  ; sta scroll_y_lo
-  ; sta scroll_y_hi
-
-  ; --- redraw starfield safely (rendering off inside helper) ---
   jsr RedrawStarfieldOnRestart
-
   lda #STATE_TITLE
   sta game_state
   rts
 
+
+
 ; call before any big VRAM write (nametables, attributes, etc.)
 PPU_BeginVRAM:
-  ; disable NMI 
-  lda PPUCTRL
+  ; disable NMI using shadow (DO NOT read $2000)
+  lda ppuctrl_shadow
   and #%01111111
+  sta ppuctrl_shadow
   sta PPUCTRL
 
   ; rendering off
@@ -4062,21 +4859,27 @@ PPU_EndVRAM:
   sta PPUSCROLL
   sta PPUSCROLL
 
-  ; re-enable NMI
-  lda PPUCTRL
+  ; re-enable NMI using shadow (DO NOT read $2000)
+  lda ppuctrl_shadow
   ora #%10000000
+  sta ppuctrl_shadow
   sta PPUCTRL
 
-  ; rendering on 
+  ; rendering on
   lda #PPUMASK_BG_SPR
   sta PPUMASK
   rts
+
 
 ; ----------------------------
 ; ResetRun
 ; - prepares a new run (called at boot and on restart)
 ; ----------------------------
 ResetRun:
+
+  lda #$01
+  sta hud_dirty
+
 
   ; ---- clear catch objects ----
   ldx #$00
@@ -4103,8 +4906,8 @@ sta debug_force_type
   lda #FLAG_SET
   sta boss_hp_clear_pending
 
-  lda #FLAG_CLEAR
-  sta boss_hp_dirty
+
+  
   sta boss_alive
   sta boss_hp
   sta boss_hp_max
@@ -5100,11 +5903,12 @@ PlayUpdate:
   ; Enter boss phase: set state, flash, clear actors, init boss, show HP bar.
   lda #STATE_BOSS
   sta game_state
-    lda #FLASH_BOSS_START_FR
+  lda #FLASH_BOSS_START_FR
   sta screen_flash_timer
 
   jsr ClearActors
-    jsr BossSpawn
+  jsr BossSpawn
+
   rts
 
 NextLevel:
@@ -5187,8 +5991,7 @@ BossSpawn:
   sta boss_hp
   sta boss_hp_max
 
-  lda #FLAG_SET
-  sta boss_hp_dirty
+
   lda #FLAG_CLEAR
   sta boss_flash
 
@@ -6246,8 +7049,7 @@ CollideBulletsBoss:
       sta boss_pattern
 :
 
-  lda #FLAG_SET
-  sta boss_hp_dirty
+
 
   lda boss_hp
   bne @next_b
@@ -6255,6 +7057,9 @@ CollideBulletsBoss:
   ; boss dead
   lda #FLAG_CLEAR
   sta boss_alive
+
+  lda #$01
+  sta boss_hp_clear_pending
 
 
   ;jsr PlaySfxBossKill         ; (optional if you have it)
@@ -7302,6 +8107,13 @@ BossApplyPhaseParams:
   lda #$01
   sta tutorial_dirty
 
+  lda #$01
+  sta hud_dirty 
+  lda #$01
+  ;sta hud_visible
+
+
+
   rts
 
 @go_banner:
@@ -7311,9 +8123,247 @@ BossApplyPhaseParams:
   sta game_state
   rts
 
+  EnterIntro:
+  lda #STATE_INTRO
+  sta game_state
+  lda #$00
+  sta intro_built
+  sta intro_page
+  rts
+
+
 ;=========================================================
 ; [RENDER]  BuildOAM + draw helpers
 ;=========================================================
+; ------------------------------------------------------------
+; DrawTutorialIconSprites
+; - Draws: enemy row + core row as sprites (not BG)
+; - Uses the SAME sprite palettes as gameplay via ATTR bytes.
+; - Writes into OAM_BUF starting at TUT_OAM_BASE.
+; ------------------------------------------------------------
+TUT_OAM_BASE = $20      ; sprite slot *4 (byte offset)
+
+DrawTutorialIconSprites:
+  ldy #TUT_OAM_BASE
+
+  ; ----------------------------
+  ; ENEMY ROW (Y=$70)
+  ; ----------------------------
+  lda #$58
+  sta tmp7
+  clc
+  adc #$08
+  sta tmp8
+
+  lda #ENEMY_ATTR
+  sta tmp4              ; attr
+
+  ; --- Enemy A (1x1) ---
+  lda #$50             ; x
+  sta tmp5
+  lda tmp7              ; y
+  sta OAM_BUF,y         ; Y
+  iny
+  lda #ENEMY_A_TILE
+  sta OAM_BUF,y         ; TILE
+  iny
+  lda tmp4
+  sta OAM_BUF,y         ; ATTR
+  iny
+  lda tmp5
+  sta OAM_BUF,y         ; X
+  iny
+
+  ; --- Enemy B (1x1) ---
+  lda #$60
+  sta tmp5
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda #ENEMY_B_TILE
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  ; --- Enemy C (2x2) at X=$50 ---
+  lda #$70
+  sta tmp5              ; x0
+  clc
+  adc #$08
+  sta tmp6              ; x1
+
+  lda #ENEMY_C_TL
+  sta tmp0
+  lda #ENEMY_C_TR
+  sta tmp1
+  lda #ENEMY_C_BL
+  sta tmp2
+  lda #ENEMY_C_BR
+  sta tmp3
+  jsr TUT_Push2x2
+
+  ; --- Enemy D (2x2) at X=$68 ---
+  lda #$88
+  sta tmp5
+  clc
+  adc #$08
+  sta tmp6
+
+  lda #ENEMY_D_TL
+  sta tmp0
+  lda #ENEMY_D_TR
+  sta tmp1
+  lda #ENEMY_D_BL
+  sta tmp2
+  lda #ENEMY_D_BR
+  sta tmp3
+  jsr TUT_Push2x2
+
+  ; --- Enemy E (2x2) at X=$80 ---
+  lda #$A0
+  sta tmp5
+  clc
+  adc #$08
+  sta tmp6
+
+  lda #ENEMY_E_TL
+  sta tmp0
+  lda #ENEMY_E_TR
+  sta tmp1
+  lda #ENEMY_E_BL
+  sta tmp2
+  lda #ENEMY_E_BR
+  sta tmp3
+  jsr TUT_Push2x2
+
+  ; ----------------------------
+  ; CORE ROW (Y=$88)
+  ; ----------------------------
+  lda #$90
+  sta tmp7
+
+  lda #$00
+  sta tmp4
+
+  lda #$74
+  sta tmp5
+  lda #$30
+  jsr TUT_Push1x1
+
+  lda #$7C
+  sta tmp5
+  lda #$31
+  jsr TUT_Push1x1
+
+  lda #$84
+  sta tmp5
+  lda #$32
+  jsr TUT_Push1x1
+
+
+
+
+  rts
+
+; tmp0..tmp3 tiles
+; tmp4 = attr
+; tmp5 = x0
+; tmp6 = x1
+; tmp7 = y0
+; tmp8 = y1
+; Y   = OAM byte offset
+TUT_Push2x2:
+  ; TL
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  ; TR
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp6
+  sta OAM_BUF,y
+  iny
+
+  ; BL
+  lda tmp8
+  sta OAM_BUF,y
+  iny
+  lda tmp2
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  ; BR
+  lda tmp8
+  sta OAM_BUF,y
+  iny
+  lda tmp3
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp6
+  sta OAM_BUF,y
+  iny
+
+  rts
+
+
+; ----------------------------
+; 1x1 sprite helper
+; - A = tile
+; - tmp4 = attr
+; - tmp5 = x
+; - tmp7 = y
+; - Y = OAM byte offset
+; ----------------------------
+TUT_Push1x1:
+  sta tmp0              ; save tile
+
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+  rts
+
+
+
 ; ----------------------------
 ; BuildOAM
 ; - OAM layout:
@@ -7372,23 +8422,27 @@ BuildOAM:
   jsr ClearOAMShadow
 
   lda game_state
+  cmp #STATE_TUTORIAL
+  bne @check_title
+    jsr DrawTutorialIconSprites
+    tya
+    tax                  ; X = first unused OAM byte offset
+    jmp @hide_tail
+
+@check_title:
   cmp #STATE_TITLE
   bne @check_over
-
-  ; TITLE: nothing to draw (BG does the title)
-  rts
+    rts
 
 @check_over:
   lda game_state
   cmp #STATE_OVER
   bne @normal_draw
-
-  ; STATE_OVER: no sprites (BG handles overlays)
-  rts
-
-
+    rts
 
 @normal_draw:
+  
+
 
   ; ----------------------------
   ; Player metasprite (sprites 0-3)
@@ -8095,6 +9149,7 @@ BuildOAM:
 :
   tax
 
+
 @hide_tail:
   lda #$FE
   sta OAM_BUF,x
@@ -8104,6 +9159,7 @@ BuildOAM:
   inx
   bne @hide_tail
   rts
+
 
 
 ; ------------------------------------------------------------
@@ -8275,118 +9331,10 @@ _DrawBannerChar:
 
 
 
-; A = 0 => hide (write blanks)
-; A = 1 => show (write STARFALL)
-WriteTitleStarfallBG:
-  pha
-
-  ; set VRAM address to TITLE position ($214C)
-  lda PPUSTATUS
-  lda #TITLE_NT_HI
-  sta PPUADDR
-  lda #TITLE_NT_LO
-  sta PPUADDR
-
-  pla
-  beq @write_blanks
-
-@write_text:
-  ldx #$00
-@tloop:
-  lda TitleStarfallTiles,x
-  sta PPUDATA
-  inx
-  cpx #TITLE_LEN
-  bne @tloop
-  jmp @done
-
-@write_blanks:
-  ldx #$00
-@bloop:
-  lda #$00          ; blank tile
-  sta PPUDATA
-  inx
-  cpx #TITLE_LEN
-  bne @bloop
-
-@done:
-
-rts
-
-; A = 0 => hide (write blanks)
-; A = 1 => show (write GameOverTiles)
-WriteGameOverBG:
-  pha
-
-  lda PPUSTATUS
-  lda #GAMEOVER_NT_HI
-  sta PPUADDR
-  lda #GAMEOVER_NT_LO
-  sta PPUADDR
-
-  pla
-  beq @write_blanks
-
-@write_text:
-  ldx #$00
-@tloop:
-  lda GameOverTiles,x
-  sta PPUDATA
-  inx
-  cpx #GAMEOVER_LEN
-  bne @tloop
-  jmp @done
-
-@write_blanks:
-  ldx #$00
-@bloop:
-  lda #$00
-  sta PPUDATA
-  inx
-  cpx #GAMEOVER_LEN
-  bne @bloop
-
-@done:
-rts
 
 
 
-; A = 0 => hide (write blanks)
-; A = 1 => show (write PressStartTiles)
-WritePressStartBG:
-  pha
 
-  ; set VRAM address to $2248
-  lda PPUSTATUS
-  lda #PRESS_NT_HI
-  sta PPUADDR
-  lda #PRESS_NT_LO
-  sta PPUADDR
-
-  pla
-  beq @write_blanks
-
-@write_text:
-  ldx #$00
-@tloop:
-  lda PressStartTiles,x
-  sta PPUDATA
-  inx
-  cpx #PRESS_NT_LEN
-  bne @tloop
-  jmp @done
-
-@write_blanks:
-  ldx #$00
-@bloop:
-  lda #$00          ; blank tile
-  sta PPUDATA
-  inx
-  cpx #PRESS_NT_LEN
-  bne @bloop
-
-@done:
-rts
 
 ; -------------------------------------------------------------
 ; Boss Render
@@ -8988,221 +9936,104 @@ DrawBossBullets_Fixed:
   rts
 
 
-DrawTutorialBG:
+;DrawTutorialBG:
   ; LINE 1: "AVOID ENEMIES" (13 chars)
-  lda PPUSTATUS
-  lda #TUT_NT_HI
-  sta PPUADDR
-  lda #TUT_LINE1_LO
-  sta PPUADDR
+ ; lda PPUSTATUS
+  ;lda #TUT_NT_HI
+  ;sta PPUADDR
+  ;lda #TUT_LINE1_LO
+ ; sta PPUADDR
 
-  lda #TILE_A
-  sta PPUDATA
-  lda #TILE_V
-  sta PPUDATA
-  lda #TILE_O
-  sta PPUDATA
-  lda #TILE_I
-  sta PPUDATA
-  lda #TILE_D
-  sta PPUDATA
-  lda #$00
-  sta PPUDATA          ; space
-  lda #TILE_E
-  sta PPUDATA
-  lda #TILE_N
-  sta PPUDATA
-  lda #TILE_E
-  sta PPUDATA
-  lda #TILE_M
-  sta PPUDATA
-  lda #TILE_I
-  sta PPUDATA
-  lda #TILE_E
-  sta PPUDATA
-  lda #TILE_S
-  sta PPUDATA
+  ;lda #TILE_A
+  ;sta PPUDATA
+  ;lda #TILE_V
+  ;sta PPUDATA
+  ;lda #TILE_O
+  ;sta PPUDATA
+  ;lda #TILE_I
+  ;sta PPUDATA
+  ;lda #TILE_D
+  ;sta PPUDATA
+  ;lda #$00
+  ;sta PPUDATA          ; space
+  ;lda #TILE_E
+  ;sta PPUDATA
+  ;lda #TILE_N
+  ;sta PPUDATA
+  ;lda #TILE_E
+  ;sta PPUDATA
+  ;lda #TILE_M
+  ;sta PPUDATA
+  ;lda #TILE_I
+  ;sta PPUDATA
+  ;lda #TILE_E
+  ;sta PPUDATA
+  ;lda #TILE_S
+  ;sta PPUDATA
 
   ; LINE 2: "CATCH CORES" (11 chars)
-  lda PPUSTATUS
-  lda #TUT_NT_HI
-  sta PPUADDR
-  lda #TUT_LINE2_LO
-  sta PPUADDR
+  ;lda PPUSTATUS
+  ;lda #TUT_NT_HI
+  ;sta PPUADDR
+  ;lda #TUT_LINE2_LO
+  ;sta PPUADDR
 
-  lda #TILE_C
-  sta PPUDATA
-  lda #TILE_A
-  sta PPUDATA
-  lda #TILE_T
-  sta PPUDATA
-  lda #TILE_C
-  sta PPUDATA
-  lda #TILE_H
-  sta PPUDATA
-  lda #$00
-  sta PPUDATA          ; space
-  lda #TILE_C
-  sta PPUDATA
-  lda #TILE_O
-  sta PPUDATA
-  lda #TILE_R
-  sta PPUDATA
-  lda #TILE_E
-  sta PPUDATA
-  lda #TILE_S
-  sta PPUDATA
+  ;lda #TILE_C
+  ;sta PPUDATA
+  ;lda #TILE_A
+  ;sta PPUDATA
+  ;lda #TILE_T
+  ;sta PPUDATA
+  ;lda #TILE_C
+  ;sta PPUDATA
+  ;lda #TILE_H
+  ;sta PPUDATA
+  ;lda #$00
+  ;sta PPUDATA          ; space
+  ;lda #TILE_C
+  ;sta PPUDATA
+  ;lda #TILE_O
+  ;sta PPUDATA
+  ;lda #TILE_R
+  ;sta PPUDATA
+  ;lda #TILE_E
+  ;sta PPUDATA
+  ;lda #TILE_S
+  ;sta PPUDATA
 
-  rts
+  ;rts
 
 
-  ClearTutorialBG:
+  ;ClearTutorialBG:
   ; clear line 1 (13)
-  lda PPUSTATUS
-  lda #TUT_NT_HI
-  sta PPUADDR
-  lda #TUT_LINE1_LO
-  sta PPUADDR
+  ;lda PPUSTATUS
+  ;lda #TUT_NT_HI
+  ;sta PPUADDR
+  ;lda #TUT_LINE1_LO
+  ;sta PPUADDR
 
-  ldx #13
-  lda #$00
-@c1:
-  sta PPUDATA
-  dex
-  bne @c1
+  ;ldx #13
+  ;lda #$00
+;@c1:
+ ; sta PPUDATA
+ ; dex
+ ; bne @c1
 
   ; clear line 2 (11)
-  lda PPUSTATUS
-  lda #TUT_NT_HI
-  sta PPUADDR
-  lda #TUT_LINE2_LO
-  sta PPUADDR
+  ;lda PPUSTATUS
+  ;lda #TUT_NT_HI
+  ;sta PPUADDR
+  ;lda #TUT_LINE2_LO
+  ;sta PPUADDR
 
-  ldx #11
-  lda #$00
-@c2:
-  sta PPUDATA
-  dex
-  bne @c2
+  ;ldx #11
+  ;lda #$00
+;@c2:
+ ; sta PPUDATA
+ ; dex
+ ; bne @c2
 
-  rts
-
-
-
-; ------------------------------------------------------------
-; ClearBossHPBG (VBlank)
-; - Writes blank tiles over the boss HP bar region
-; - Called from NMI when boss_hp_clear_pending=1
-; ------------------------------------------------------------
-ClearBossHPBG:
-  lda PPUSTATUS
-  lda #BOSSBAR_NT_HI
-  sta PPUADDR
-  lda #BOSSBAR_NT_LO
-  sta PPUADDR
-
-  ldx #BOSSBAR_LEN
-  lda #BOSSBAR_EMPTY      ; usually $00
-@loop:
-  sta PPUDATA
-  dex
-  bne @loop
-rts
-
-; ------------------------------------------------------------
-; WriteBossHPBarBG (VBlank)
-; - Percent-scaled boss HP bar
-; - 16 tiles wide (BOSSBAR_LEN)
-; ------------------------------------------------------------
-WriteBossHPBarBG:
-  lda PPUSTATUS
-  lda #BOSSBAR_NT_HI
-  sta PPUADDR
-  lda #BOSSBAR_NT_LO
-  sta PPUADDR
-
-  ; If hp_max = 0, avoid divide-by-zero: show empty
-  lda boss_hp_max
-  bne :+
-    lda #$00
-    sta tmp0          ; filled_tiles = 0
-    jmp @draw
-:
-
-  ; Compute filled_tiles in tmp0:
-  ; tmp0 = floor(boss_hp * 16 / boss_hp_max)
-  ; We'll do: numerator = boss_hp << 4  (0..(255*16))
-  ; Use 16-bit numerator in tmp2:tmp1 (lo:hi)
-  lda boss_hp
-  sta tmp1
-  lda #$00
-  sta tmp2
-  ; shift left 4 (16x)
-  asl tmp1
-  rol tmp2
-  asl tmp1
-  rol tmp2
-  asl tmp1
-  rol tmp2
-  asl tmp1
-  rol tmp2
-
-  ; quotient in tmp0
-  lda #$00
-  sta tmp0
-
-@div_loop:
-  ; while (numerator >= boss_hp_max) { numerator -= boss_hp_max; tmp0++; }
-  lda tmp2
-  bne @can_sub        ; if high byte nonzero, definitely >=
-  lda tmp1
-  cmp boss_hp_max
-  bcc @div_done
-
-@can_sub:
-  lda tmp1
-  sec
-  sbc boss_hp_max
-  sta tmp1
-  lda tmp2
-  sbc #$00
-  sta tmp2
-  inc tmp0
-  jmp @div_loop
-
-@div_done:
-  ; clamp to 16 (just in case)
-  lda tmp0
-  cmp #BOSSBAR_LEN
-  bcc :+
-    lda #BOSSBAR_LEN
-    sta tmp0
-:
-
-@draw:
-  ldx #$00
-@loop:
-  cpx #BOSSBAR_LEN
-  bcs @done
-
-  txa
-  cmp tmp0
-  bcc @filled
-
-@empty:
-  lda #BOSSBAR_EMPTY
-  sta PPUDATA
-  inx
-  bne @loop
-
-@filled:
-  lda #BOSSBAR_TILE
-  sta PPUDATA
-  inx
-  bne @loop
-
-@done:
-  rts
+ ; rts
 
 
 HideBannerSprites: 
@@ -9309,7 +10140,7 @@ HUD_NMI_Update:
   sta PPUDATA
   lda #TILE_I
   sta PPUDATA
-  lda #$00          ; space
+  lda #TILE_SPACE          ; space
   sta PPUDATA
 
   ; ---------- write HI digits (5) ----------
@@ -9351,7 +10182,7 @@ HUD_NMI_Update:
   sta PPUDATA
   lda #TILE_C
   sta PPUDATA
-  lda #$00          ; space
+  lda #TILE_SPACE          ; space
   sta PPUDATA
 
   ; ---------- write SCORE digits (5) ----------
@@ -9442,7 +10273,6 @@ HUD_NMI_Update:
   jmp @heart_loop
 
 @hearts_done:
-  ; continue HUD_NMI_Update...
 
 rts
 
@@ -9695,10 +10525,9 @@ DrawStarfieldNT1:
 
 
 
-; Tile $0A DEBUG solid (color 1)
-.byte $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF
+; Tile 0A (blank)
 .byte $00,$00,$00,$00,$00,$00,$00,$00
-
+.byte $00,$00,$00,$00,$00,$00,$00,$00
 
 ; Tile $0B DEBUG solid (color 2)
 .byte $00,$00,$00,$00,$00,$00,$00,$00
@@ -10111,5 +10940,122 @@ DrawStarfieldNT1:
 .byte $66,$76,$7E,$6E,$66,$66,$66,$00
 .byte $66,$76,$7E,$6E,$66,$66,$66,$00
 
-  .res 8192-1360, $00
+
+; ------------------------------------------------------------
+; Padding tiles $55-$5F (unused)
+; ------------------------------------------------------------
+  .res (16*11), $00     ; $55..$5F = 11 tiles of blanks
+
+; ------------------------------------------------------------
+; Alphabet A-Z (tiles $60-$79)
+; color index 3 (both planes identical)
+; ------------------------------------------------------------
+
+; $60 'A'
+.byte $18,$3C,$66,$66,$7E,$66,$66,$00
+.byte $18,$3C,$66,$66,$7E,$66,$66,$00
+
+; $61 'B'
+.byte $7C,$66,$66,$7C,$66,$66,$7C,$00
+.byte $7C,$66,$66,$7C,$66,$66,$7C,$00
+
+; $62 'C'
+.byte $3C,$66,$60,$60,$60,$66,$3C,$00
+.byte $3C,$66,$60,$60,$60,$66,$3C,$00
+
+; $63 'D'
+.byte $7C,$66,$66,$66,$66,$66,$7C,$00
+.byte $7C,$66,$66,$66,$66,$66,$7C,$00
+
+; $64 'E'
+.byte $7E,$60,$60,$7C,$60,$60,$7E,$00
+.byte $7E,$60,$60,$7C,$60,$60,$7E,$00
+
+; $65 'F'
+.byte $7E,$60,$60,$7C,$60,$60,$60,$00
+.byte $7E,$60,$60,$7C,$60,$60,$60,$00
+
+; $66 'G'
+.byte $3C,$66,$60,$6E,$66,$66,$3C,$00
+.byte $3C,$66,$60,$6E,$66,$66,$3C,$00
+
+; $67 'H'
+.byte $66,$66,$66,$7E,$66,$66,$66,$00
+.byte $66,$66,$66,$7E,$66,$66,$66,$00
+
+; $68 'I'
+.byte $3C,$18,$18,$18,$18,$18,$3C,$00
+.byte $3C,$18,$18,$18,$18,$18,$3C,$00
+
+; $69 'J'
+.byte $1E,$0C,$0C,$0C,$0C,$6C,$38,$00
+.byte $1E,$0C,$0C,$0C,$0C,$6C,$38,$00
+
+; $6A 'K'
+.byte $66,$6C,$78,$70,$78,$6C,$66,$00
+.byte $66,$6C,$78,$70,$78,$6C,$66,$00
+
+; $6B 'L'
+.byte $60,$60,$60,$60,$60,$60,$7E,$00
+.byte $60,$60,$60,$60,$60,$60,$7E,$00
+
+; $6C 'M'
+.byte $63,$77,$7F,$6B,$63,$63,$63,$00
+.byte $63,$77,$7F,$6B,$63,$63,$63,$00
+
+; $6D 'N'
+.byte $66,$76,$7E,$6E,$66,$66,$66,$00
+.byte $66,$76,$7E,$6E,$66,$66,$66,$00
+
+; $6E 'O'
+.byte $3C,$66,$66,$66,$66,$66,$3C,$00
+.byte $3C,$66,$66,$66,$66,$66,$3C,$00
+
+; $6F 'P'
+.byte $7C,$66,$66,$7C,$60,$60,$60,$00
+.byte $7C,$66,$66,$7C,$60,$60,$60,$00
+
+; $70 'Q'
+.byte $3C,$66,$66,$66,$6E,$3C,$0E,$00
+.byte $3C,$66,$66,$66,$6E,$3C,$0E,$00
+
+; $71 'R'
+.byte $7C,$66,$66,$7C,$6C,$66,$66,$00
+.byte $7C,$66,$66,$7C,$6C,$66,$66,$00
+
+; $72 'S'
+.byte $3E,$60,$60,$3C,$06,$06,$7C,$00
+.byte $3E,$60,$60,$3C,$06,$06,$7C,$00
+
+; $73 'T'
+.byte $7E,$18,$18,$18,$18,$18,$18,$00
+.byte $7E,$18,$18,$18,$18,$18,$18,$00
+
+; $74 'U'
+.byte $66,$66,$66,$66,$66,$66,$3C,$00
+.byte $66,$66,$66,$66,$66,$66,$3C,$00
+
+; $75 'V'
+.byte $66,$66,$66,$66,$66,$3C,$18,$00
+.byte $66,$66,$66,$66,$66,$3C,$18,$00
+
+; $76 'W'
+.byte $63,$63,$63,$6B,$7F,$77,$63,$00
+.byte $63,$63,$63,$6B,$7F,$77,$63,$00
+
+; $77 'X'
+.byte $66,$66,$3C,$18,$3C,$66,$66,$00
+.byte $66,$66,$3C,$18,$3C,$66,$66,$00
+
+; $78 'Y'
+.byte $66,$66,$66,$3C,$18,$18,$18,$00
+.byte $66,$66,$66,$3C,$18,$18,$18,$00
+
+; $79 'Z'
+.byte $7E,$06,$0C,$18,$30,$60,$7E,$00
+.byte $7E,$06,$0C,$18,$30,$60,$7E,$00
+
+
+.res 8192-1952, $00
+
 
