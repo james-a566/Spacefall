@@ -6,15 +6,44 @@ sounds:
 	.word @ntsc
 	.word @ntsc
 @ntsc:
-	.word @sfx_ntsc_firing
-	.word @sfx_ntsc_explosion
+	.word @sfx_ntsc_00_firing
+	.word @sfx_ntsc_01_explosion
+	.word @sfx_ntsc_02_over
+	.word @sfx_ntsc_03_jam_click
+	.word @sfx_ntsc_04_dry
+	.word @sfx_ntsc_05_enemy_hit
+	.word @sfx_ntsc_06_player_hit
+	.word @sfx_ntsc_07_pickup
+	.word @sfx_ntsc_08_boss_shot
 
-@sfx_ntsc_firing:
+@sfx_ntsc_00_firing:
 	.byte $84,$72,$85,$00,$83,$3a,$89,$f0,$01,$84,$86,$83,$38,$01,$84,$9a
 	.byte $83,$35,$01,$84,$a5,$01,$84,$b9,$01,$84,$b7,$01,$84,$cb,$01,$84
 	.byte $df,$01,$84,$f3,$01,$84,$07,$85,$01,$01,$84,$1b,$01,$84,$2f,$01
 	.byte $00
-@sfx_ntsc_explosion:
+@sfx_ntsc_01_explosion:
 	.byte $8a,$0e,$89,$3f,$01,$89,$3a,$02,$89,$36,$02,$8a,$0f,$07,$00
+@sfx_ntsc_02_over:
+	.byte $84,$8e,$85,$00,$83,$3f,$89,$f0,$01,$83,$3c,$01,$83,$38,$08,$84
+	.byte $a9,$83,$3f,$01,$83,$3c,$01,$83,$38,$08,$84,$d5,$83,$3f,$01,$83
+	.byte $3c,$01,$83,$38,$08,$00
+@sfx_ntsc_03_jam_click:
+	.byte $84,$2f,$85,$00,$83,$3f,$89,$f0,$01,$83,$30,$03,$83,$3f,$01,$00
+@sfx_ntsc_04_dry:
+	.byte $84,$80,$85,$00,$83,$3f,$8a,$05,$89,$3f,$01,$84,$82,$83,$3a,$89
+	.byte $3a,$01,$84,$84,$83,$36,$89,$f0,$01,$84,$86,$00
+@sfx_ntsc_05_enemy_hit:
+	.byte $84,$5e,$85,$00,$83,$3a,$8a,$00,$89,$3a,$01,$83,$30,$89,$36,$01
+	.byte $00
+@sfx_ntsc_06_player_hit:
+	.byte $84,$7c,$85,$01,$83,$3f,$8a,$0c,$89,$3f,$01,$83,$3c,$89,$3c,$01
+	.byte $83,$39,$89,$39,$01,$83,$36,$89,$36,$01,$83,$30,$89,$33,$01,$00
+@sfx_ntsc_07_pickup:
+	.byte $84,$46,$85,$00,$83,$3f,$89,$f0,$01,$83,$38,$01,$84,$6a,$83,$3f
+	.byte $01,$83,$38,$01,$84,$54,$83,$3f,$01,$83,$38,$01,$00
+@sfx_ntsc_08_boss_shot:
+	.byte $84,$6b,$85,$00,$83,$3f,$8a,$02,$89,$3f,$01,$84,$6d,$83,$3c,$89
+	.byte $3c,$01,$84,$6e,$83,$39,$89,$39,$01,$84,$70,$83,$36,$89,$f0,$01
+	.byte $84,$71,$00
 
 .export sounds
