@@ -30,11 +30,7 @@ State_Banner:
 ; ----------------------------
 State_Play:
 
-  lda #$01
-  sta hud_dirty
-
-  lda #$00
-  jsr famistudio_music_pause
+ 
   lda #MUSIC_GAMEPLAY
   cmp current_music
   beq :+
@@ -99,11 +95,9 @@ State_Boss:
       jsr TextQ_End
 :
 
-  lda #$01
-  sta hud_dirty
+ 
 
-  lda #$00
-  jsr famistudio_music_pause
+  
   lda #MUSIC_BOSS
   cmp current_music
   beq :+
@@ -152,3 +146,81 @@ State_Boss:
   jsr TextQ_End
   jsr BuildOAM
   jmp MainLoop
+
+State_BossIntro:
+
+  ; ----------------------------
+  ; Build/queue text ONCE
+  ; ----------------------------
+  lda boss_intro_built
+  bne @run
+
+    lda #$01
+    sta boss_intro_built
+
+    jsr TextQ_Clear
+
+    lda #<Str_BossWarning
+    sta ptr0
+    lda #>Str_BossWarning
+    sta ptr0+1
+
+    lda #BOSS_INTRO_TEXT_HI
+    ldx #BOSS_INTRO_TEXT_LO
+    jsr TextQ_QueueStrZ
+
+    jsr TextQ_End
+
+@run:
+  lda boss_intro_timer
+  beq @go_boss
+  dec boss_intro_timer
+
+  jsr BuildOAM
+  jmp MainLoop
+
+@go_boss:
+  ; ----------------------------
+  ; Clear intro text (queue once)
+  ; ----------------------------
+  jsr TextQ_Clear
+  jsr BossIntro_QueueClearText
+  jsr TextQ_End
+
+  ; ----------------------------
+  ; Clear the playfield + spawn boss
+  ; ----------------------------
+  jsr ClearEnemies
+  jsr ClearCatch
+  jsr ClearPlayerBullets
+  jsr ClearBossBullets
+
+  jsr BossSpawn
+
+  lda #$00
+  sta boss_intro_built      ; so next time you enter, it rebuilds
+  lda #STATE_BOSS
+  sta game_state
+
+  jsr BuildOAM
+  jmp MainLoop
+
+
+Str_BossWarning:
+  .byte TILE_B, TILE_O, TILE_S, TILE_S, TILE_SPACE
+  .byte TILE_A, TILE_P, TILE_P, TILE_R, TILE_O, TILE_A, TILE_C, TILE_H, TILE_I,TILE_N, TILE_G
+  .byte $00
+
+; Clears exactly the same region your boss intro text uses.
+; Uses TextQ_QueueFill to write blank tiles.
+
+BossIntro_QueueClearText:
+  lda #$00
+  sta tmp0                 ; fill tile = blank (or TILE_SPACE)
+
+  lda #BOSS_INTRO_TEXT_HI
+  ldx #BOSS_INTRO_TEXT_LO
+  ldy #BOSS_INTRO_TEXT_LEN
+  jsr TextQ_QueueFill
+  rts
+

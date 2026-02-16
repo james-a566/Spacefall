@@ -1538,8 +1538,8 @@ BossUpdatePhase:
 
   ; optional: phase SFX + small flash
   ;jsr PlaySfxBossPhase
-  lda #$06
-  sta screen_flash_timer
+  ;lda #$06                     ; removed for now
+  ;sta screen_flash_timer       ; removed for now
 
     lda #$00
   sta boss_burst_left

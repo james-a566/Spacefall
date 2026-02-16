@@ -160,6 +160,8 @@ BlinkBlanks:
   .endrepeat
 
 
+
+
 ; ----------------------------
 ; Sound Data
 ;-----------------------------
@@ -193,10 +195,8 @@ Palettes:
                               ;   idx2 body    = $16 (red)
                               ;   idx3 core    = $30 (white)
 
-  .byte $0F,$01,$27,$30       ; SPR2 enemies shield/flash:
-                              ;   outline stays same ($01)
-                              ;   body becomes gold ($27)
-                              ;   core stays white ($30)
+  .byte $0F,$16,$27,$30       ; SPR2 explosion/fx
+                              
 
   .byte $0F,$2A,$12,$02       ; SPR3 boss (unchanged)
 

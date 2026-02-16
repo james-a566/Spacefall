@@ -78,7 +78,7 @@ TILE_DASH  = $2F   ; '-'
 TILE_HEART_FULL  = $30
 TILE_HEART_EMPTY = $2E
 
-; ---- BG stars (reserve a block so you can expand) ----
+; ---- BG stars (reserve a block for expansion) ----
 TILE_STAR_0 = $40
 TILE_STAR_1 = $41
 TILE_STAR_2 = $42
@@ -111,7 +111,12 @@ TILE_PBULLET_0  = $90
 TILE_PBULLET_1  = $91
 TILE_PBULLET_2  = $92
 TILE_PBULLET_3  = $93
-; $94-$97 reserved (muzzle flash, spark, etc.)
+
+TILE_CATCH_CORE_BASE          = $94
+TILE_CATCH_CORE_FRACTURED     = $95
+TILE_CATCH_CORE_FINAL         = $96   
+
+; Tile $97 unused
 
 ; ---- Enemy A (1x1) block ($98-$9F): up to 8 frames ----
 TILE_ENEMY_A_F0 = $98
@@ -162,9 +167,15 @@ TILE_BOSS_BL = $DE
 TILE_BOSS_BM = $DF
 TILE_BOSS_BR = $E0
 
-; ---- Sprite reserved ($E1-$FF) ----
-; explosions, pickups, enemy bullets, extra UI sprites, etc.
+; explosions, pickups, enemy bullets, extra UI sprites, etc. $F0-$FF
+; 2x2 explosion frames (TL tile of each frame)
+TILE_EXP2X2_F0 = $F0   ; uses F0 F1 F2 F3
+TILE_EXP2X2_F1 = $F4   ; uses F4 F5 F6 F7
+TILE_EXP2X2_F2 = $F8   ; uses F8 F9 FA FB
 
-TILE_CATCH_CORE_BASE          = $F0
-TILE_CATCH_CORE_FRACTURED     = $F1
-TILE_CATCH_CORE_FINAL         = $F2     
+; 1x1 explosion frames
+TILE_EXP1X1_0  = $FC
+TILE_EXP1X1_1  = $FD
+TILE_EXP1X1_2  = $FE
+
+   

@@ -77,6 +77,7 @@ tmp5: .res 1
 tmp6: .res 1
 tmp7: .res 1
 tmp8: .res 1
+tmp9: .res 1
 
 ptr0:  .res 2
 ptr1:  .res 2
@@ -115,3 +116,7 @@ sfxn_hold:   .res 1
 sfxn_active: .res 1
 
 shield_timer: .res 1
+
+boss_intro_timer: .res 1
+boss_intro_built: .res 1
+bossintro_text_cleared: .res 1

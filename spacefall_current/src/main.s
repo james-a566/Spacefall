@@ -4,17 +4,17 @@
 ; ============================================================
 
 ; ============================================================
-; BUILD FLAGS (must be first)
+; BUILD FLAGS 
 ; ============================================================
-DEBUG_BUILD        = 0
-CLEANUP_MODE       = 1    ; keep at 1 while refactoring (no logic changes)
+; currently unused 
+
 
 ; ============================================================
 ; Audio: FamiStudio config
 ; MUST be defined before including famistudio_ca65.s
 ; ============================================================
 FAMISTUDIO_CFG_SFX_SUPPORT = 1
-FAMISTUDIO_CFG_SFX_STREAMS = 2   ; you said 2 streams: keep comment consistent
+FAMISTUDIO_CFG_SFX_STREAMS = 2    
 
 ; ============================================================
 ; CONFIG / CONSTANTS
@@ -77,7 +77,7 @@ FAMISTUDIO_CFG_SFX_STREAMS = 2   ; you said 2 streams: keep comment consistent
 ; ============================================================
 .include "src/game/actors.inc"
 .include "src/game/player.inc"
-;.include "src/game/bullets.inc"        ; only if you have this file; otherwise remove
+;.include "src/game/bullets.inc"        ; to add later
 .include "src/game/enemies.inc"
 .include "src/game/catch.inc"
 .include "src/game/boss.inc"
@@ -111,15 +111,8 @@ FAMISTUDIO_CFG_SFX_STREAMS = 2   ; you said 2 streams: keep comment consistent
 
 ; ============================================================
 ; [HDR] iNES Header
-; (You can move this to src/system/header.inc later if you want)
 ; ============================================================
-.segment "HEADER"
-  .byte "NES", $1A
-  .byte $02          ; 32KB PRG (2 * 16KB)
-  .byte $01          ; 8KB CHR  (1 * 8KB)
-  .byte $01          ; mapper 0, vertical mirroring
-  .byte $00
-  .res 8, $00
+.include "src/system/header.inc"
 
 ; ============================================================
 ; CHR

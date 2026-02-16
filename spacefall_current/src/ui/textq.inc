@@ -3,20 +3,24 @@
 
 ; ------------------------------------------------------------
 ; TextQ_Reset
-; - clears queue indices so NMI has nothing to flush
+; Back-compat entrypoint: keep callers working.
 ; ------------------------------------------------------------
 TextQ_Reset:
+  ; fallthrough (or jmp) to the real clear routine
+  ; (choose one style and stick with it)
+  jmp TextQ_Clear
+
+
+; ------------------------------------------------------------
+; TextQ_Clear
+; Real implementation
+; ------------------------------------------------------------
+TextQ_Clear:
   lda #$00
-  sta textq_w
-  ; if you have a read index too:
   sta textq_r
+  sta textq_w
   rts
 
-  TextQ_Clear:
-  lda #$00
-  sta textq_w
-  sta textq_r
-  rts
 
 ; A = byte to push
 TextQ_PushByte:
@@ -62,15 +66,23 @@ TextQ_QueueWrite:
   stx textq_lo
   sty textq_len
 
+  ; required = 3 + len
+  tya
+  clc
+  adc #3
+  sta tmp0
+  jsr TextQ_CanFit
+  bcc @drop_cmd
+
+  ; push header
   lda textq_hi
   jsr TextQ_PushByte
-
   lda textq_lo
   jsr TextQ_PushByte
-
   lda textq_len
   jsr TextQ_PushByte
 
+  ; push data
   ldy #$00
 @data:
   cpy textq_len
@@ -81,6 +93,10 @@ TextQ_QueueWrite:
   bne @data
 @done:
   rts
+
+@drop_cmd:
+  rts
+
 
 TextQ_End:
   lda #$00
@@ -329,3 +345,27 @@ TextQ_QueueFill:
   rts
 
 
+; ------------------------------------------------------------
+; TextQ_CanFit
+; Input: A = required bytes
+; Output: C=1 if can fit, C=0 if not
+; Clobbers: X
+; ------------------------------------------------------------
+TextQ_CanFit:
+  ldx textq_w
+  txa
+  clc
+  adc #$00            ; A = textq_w (kept simple if you want)
+  ; We want: textq_w + required <= TEXTQ_BUF_SIZE
+  ; So: required <= TEXTQ_BUF_SIZE - textq_w
+  lda #TEXTQ_BUF_SIZE
+  sec
+  sbc textq_w         ; A = remaining
+  ; Compare remaining (A) with required (in tmp0)
+  cmp tmp0
+  bcs @yes
+  clc
+  rts
+@yes:
+  sec
+  rts

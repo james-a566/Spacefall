@@ -12,8 +12,227 @@
 ;
 ;
 ; ============================================================
-
 CollideBulletsEnemies:
+  ; Enemy-outer / Bullet-inner refactor.
+  ; Preserves old behavior:
+  ; - Bullet hitbox treated as 8px wide (bul_x..bul_x+7)
+  ; - Enemy hitbox width/height is (extent+1) = 8 or 16
+  ; - Swept-ish Y: bul_y_prev+7 vs ene_y_prev; bul_y(now) vs ene_y+extent(now)
+  ; - Shielded Enemy E consumes bullet but takes no damage
+  ; - HP--, flash, SFX, score same as old routine
+
+  ldy #$00                      ; enemy index
+@ene_loop:
+  cpy #ENEMY_MAX
+  bcc :+
+    jmp @done
+  :
+
+  lda ene_alive,y
+  bne :+
+    jmp @ene_next
+  :
+
+  ; ----------------------------
+  ; Cache enemy extent/size/bounds ONCE per enemy
+  ; ----------------------------
+  jsr GetEnemyExtent
+  sta tmp2                       ; extent = 7 or 15
+
+  lda tmp2
+  clc
+  adc #$01
+  sta tmp3                       ; size = extent+1 => 8 or 16
+
+  ; enemy_right = ene_x + (size-1)
+  lda ene_x,y
+  clc
+  adc tmp3
+  sec
+  sbc #$01
+  sta tmp0                       ; tmp0 = enemy_right (inclusive)
+
+  ; enemy_bottom_now = ene_y + extent
+  lda ene_y,y
+  clc
+  adc tmp2
+  sta tmp                        ; tmp = enemy_bottom_now
+
+  ; ----------------------------
+  ; Bullets loop (check all bullets against this enemy)
+  ; ----------------------------
+  ldx #$00                       ; bullet index
+@bul_loop:
+  cpx #BULLET_MAX
+  bcc :+
+    jmp @ene_next
+  :
+
+  lda bul_alive,x
+  bne :+
+    jmp @bul_next
+  :
+
+  ; ----------------------------
+  ; X overlap
+  ; bullet_right = bul_x + 7
+  ; reject if bul_x > enemy_right OR ene_x > bullet_right
+  ; ----------------------------
+  lda bul_x,x
+  clc
+  adc #$07
+  sta tmp1                       ; tmp1 = bullet_right
+
+  ; if bul_x > enemy_right -> no hit
+  lda bul_x,x
+  cmp tmp0
+  bcc :+
+    jmp @bul_next                ; bul_x >= enemy_right+1
+:
+  ; if ene_x > bullet_right -> no hit
+  lda ene_x,y
+  cmp tmp1
+  bcc :+
+    jmp @bul_next
+:
+
+  ; ----------------------------
+  ; Y overlap (swept with bullet height)
+  ; bullet_top_now <= enemy_bottom_now ?
+  ; ----------------------------
+  lda bul_y,x
+  cmp tmp
+  bcc @y_ok
+  beq @y_ok
+  jmp @bul_next
+
+@y_ok:
+  ; bullet_bottom_prev >= enemy_top_prev ?
+  lda bul_y_prev,x
+  clc
+  adc #$07                       ; (BULLET_H-1)
+  cmp ene_y_prev,y
+  bcc @bul_next
+
+  ; ----------------------------
+  ; HIT!
+  ; ----------------------------
+@hit:
+  ; kill bullet (always consumed on contact)
+  lda #$00
+  sta bul_alive,x
+
+  ; ---- shield check (Enemy E) ----
+  lda ene_type,y
+  cmp #EN_E
+  bne @apply_damage
+
+  lda ene_variant,y
+  beq @apply_damage              ; 0 = unshielded => damage ok
+
+  ; shielded: no damage (but bullet already got consumed)
+  lda #ENEMY_HIT_FLASH_FR
+  sta ene_flash,y                ; feedback
+  jmp @bul_next
+
+@apply_damage:
+  ; ---- apply damage ----
+  lda ene_hp,y
+  beq @already_dead
+
+  sec
+  sbc #$01
+  sta ene_hp,y
+  bne @enemy_survives
+
+  ; ============================
+  ; ENEMY DIES (hp reached 0)
+  ; ============================
+  lda #ENEMY_DIE_FLASH_FR
+  sta ene_flash,y
+
+  sty tmp5
+  txa
+  pha
+  jsr PlaySfxExplode
+  pla
+  tax
+  ldy tmp5
+
+
+  ; ---- add score based on enemy type ----
+  txa
+  pha                            ; SAVE bullet index X
+
+  ldx ene_type,y
+  cpx #$05
+  bcc :+
+    ldx #EN_A
+:
+  txa
+  asl a
+  clc
+  adc ene_type,y
+  tax                            ; X = 3*type (your old scheme)
+
+  lda EnemyScore_HTO,x
+  sta tmp2
+  lda EnemyScore_HTO+1,x
+  sta tmp1
+  lda EnemyScore_HTO+2,x
+  sta tmp0
+
+  jsr AddScoreHTO
+
+  pla
+  tax                            ; RESTORE bullet index X
+
+  jmp @bul_next
+
+@enemy_survives:
+  ; ============================
+  ; ENEMY HIT (still alive)
+  ; ============================
+  lda #ENEMY_HIT_FLASH_FR
+  sta ene_flash,y
+
+  sty tmp5
+  txa
+  pha
+  jsr PlaySfxEnemyHit
+  pla
+  tax
+  ldy tmp5
+
+  jmp @bul_next
+
+
+
+@already_dead:
+  jmp @bul_next
+
+@bul_next:
+  inx
+  jmp @bul_loop
+
+@ene_next:
+  iny
+  jmp @ene_loop
+
+@done:
+  rts
+
+
+
+
+
+
+
+
+
+
+
+CollideBulletsEnemies_old:
   ; Uses simple AABB overlap. Enemy hitbox is currently treated as 8x8.
   ldx #$00                  ; bullet index
 @bul_loop:
@@ -145,15 +364,18 @@ bne @enemy_survives
   ; ENEMY DIES (hp reached 0)
   ; - “death flash” 
   ; ============================
-  ; ENEMY DIES
-  lda #ENEMY_DIE_FLASH_FR
-  sta ene_flash,y
+  ; preserve enemy index Y across SFX (you already did this)
+  sty tmp5
 
-  sty tmp5            ; <--- ADD (or push Y)
-
+  ; ALSO preserve bullet index X across SFX
+  txa
+  pha
   jsr PlaySfxExplode
+  pla
+  tax
 
-  ldy tmp5            ; <--- ADD (restore Y)
+  ldy tmp5
+
 
   ; ---- add score based on enemy type ----
   txa
@@ -319,12 +541,13 @@ CPE_Done:
 GetEnemyExtent:
   lda ene_type,y
   cmp #EN_C
-  bcc @small          ; A/B are < EN_C
-    lda #$0F          ; 16x16 => +15
-    rts
-@small:
-  lda #$07            ; 8x8  => +7
+  bcc @small
+  lda #$0F
   rts
+@small:
+  lda #$07
+  rts
+
 
 ; ------------------------------------------------------------
 ; PlayerTakeHit
@@ -338,8 +561,8 @@ PlayerTakeHit:
 
 lda invuln_timer
 bne @done 
-  lda #FLASH_HIT_FR
-  sta screen_flash_timer
+  ;lda #FLASH_HIT_FR              ; removed for now
+  ;sta screen_flash_timer         ; removed for now
 
   lda lives
   bne :+

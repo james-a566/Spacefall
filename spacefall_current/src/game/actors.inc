@@ -93,4 +93,49 @@ ClearEnemies_AwardScore:
 @done:
   rts
 
+; ------------------------------------------------------------
+; ClearCatch
+; - Clears all catch objects (cores/fractured/final)
+; - Safe to call during transitions (boss trigger, banner, etc.)
+; ------------------------------------------------------------
+ClearCatch:
+  ldx #$00
+@loop:
+  lda #$00
+  sta catch_alive,x
+  ; Optional hygiene (not required, but helps debugging):
+  ; sta catch_x,x
+  ; sta catch_y,x
+  ; sta catch_tile,x
+  ; sta catch_attr,x
+  inx
+  cpx #CATCH_MAX
+  bne @loop
+  rts
+
+; ------------------------------------------------------------
+; ClearEnemies
+; - Clears all enemy slots
+; - Also clears flash/hp so you don't get leftover death/hit visuals
+; ------------------------------------------------------------
+ClearEnemies:
+  ldx #$00
+@loop:
+  lda #$00
+  sta ene_alive,x
+  sta ene_flash,x
+  sta ene_hp,x
+
+  ; Optional (only if these arrays exist in your build):
+  ; sta ene_timer,x
+  ; sta ene_variant,x
+  ; sta ene_dx,x
+  ; sta ene_y_prev,x
+  ; sta ene_x,x
+  ; sta ene_y,x
+
+  inx
+  cpx #ENEMY_MAX
+  bne @loop
+  rts
 

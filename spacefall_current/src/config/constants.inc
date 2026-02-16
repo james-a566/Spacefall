@@ -46,6 +46,8 @@ STATE_TITLE     = $04
 STATE_PAUSE     = $05   ; pick an unused value
 STATE_TUTORIAL  = $06   ; pick a value not used
 STATE_INTRO     = $07
+
+STATE_BOSS_INTRO = $08
 ; ============================================================
 ; TEXTQ (Reusable text queue)
 ; ============================================================
@@ -78,7 +80,7 @@ BANNER_OAM   = $80    ; sprite #32 * 4
 BANNER_ATTR  = $00
 BOSS_OAM  = $10          ;
 CATCH_OAM_BASE = $A0   ; sprite #40
-
+BOSS_BULLET_OAM_BASE = $DC   ; sprite 55
 ; ------------------------------------------------------------
 ; Tile IDs
 ; ------------------------------------------------------------
@@ -164,7 +166,7 @@ ENEMY_ATTR      = $01      ; sprite palette index
 ENEMY_SPAWN_Y   = $10
 ENEMY_KILL_Y    = $E0
 ENEMY_HIT_FLASH_FR  = 2    ; tiny flicker for “ouch”
-ENEMY_DIE_FLASH_FR  = 8    ; death flash length
+ENEMY_DIE_FLASH_FR  = 24    ; death flash length
 EN_A = $00        ; 1x1 (8x8)
 EN_B = $01        ; 1x1 (8x8)
 EN_C = $02        ; 2x2 (16x16)
@@ -265,3 +267,8 @@ BOSS_OAM_AFTER    = BOSS_OAM + BOSS_OAM_BYTES
 ;
 ; ------------------------------------------------------------
 SHIELD_FRAMES = 255   ; 
+
+BOSS_INTRO_FRAMES = 90
+BOSS_INTRO_TEXT_HI  = $21
+BOSS_INTRO_TEXT_LO  = $8A
+BOSS_INTRO_TEXT_LEN = 18   ; number of tiles you wrote

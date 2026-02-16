@@ -9,15 +9,16 @@
 ; ------------------------------------------------------------
 ClearOAMShadow:
   ldx #$00
-@loop:
   lda #$FE
-  sta OAM_BUF,x     ; Y byte
+@loop:
+  sta OAM_BUF,x
   inx
   inx
   inx
   inx
   bne @loop
   rts
+
 
 ; ----------------------------
 ; BuildOAM
@@ -100,7 +101,7 @@ BuildOAM:
 
  
 
-  ; (NOW do your tmp4 attr logic: jam flash / pickup flash / etc)
+  ; (NOW do tmp4 attr logic: jam flash / pickup flash / etc)
   lda player_attr
   sta tmp4
 
@@ -304,6 +305,118 @@ lda #TILE_PBULLET_0
   sta tmp4
 
 @attr_ready:
+
+  ; --------------------------------------------
+  ; EXPLOSION OVERRIDE
+  ; If hp==0 and flash>0, draw explosion tiles
+  ; --------------------------------------------
+  lda ene_hp,x
+  beq :+
+    jmp @not_exploding
+  :
+  lda ene_flash,x
+  bne :+
+    jmp @not_exploding
+  :
+
+  ; explosion palette 
+  lda tmp4
+  and #%11111100
+  ora #$02
+  sta tmp4
+
+   ; tmp9 = 0..2 explosion frame, slow + forward progression
+  lda #ENEMY_DIE_FLASH_FR
+  sec
+  sbc ene_flash,x        ; elapsed = start - remaining
+
+  lsr                    ; /2
+  lsr                    ; /4
+  lsr                    ; /8   <-- speed knob (bigger = slower)
+  cmp #$03
+  bcc :+
+    lda #$02
+:
+  sta tmp9
+
+
+  lda ene_type,x
+  cmp #EN_C
+  bcs @explode_2x2
+  jmp @explode_1x1
+
+@explode_2x2:
+  ; OAM guard same as 2x2 path
+  cpy #OAM_2X2_LIMIT
+  bcc :+
+    jmp @ene_done
+:
+
+  ; pick base TL tile for this frame
+  lda tmp9
+  beq @ex2_f0
+  cmp #$01
+  beq @ex2_f1
+  lda #TILE_EXP2X2_F2
+  bne @ex2_base_ok
+@ex2_f0:
+  lda #TILE_EXP2X2_F0
+  bne @ex2_base_ok
+@ex2_f1:
+  lda #TILE_EXP2X2_F1
+@ex2_base_ok:
+  sta tmp0              ; TL
+  clc
+  adc #$01
+  sta tmp1              ; TR
+  lda tmp0
+  clc
+  adc #$02
+  sta tmp2              ; BL
+  lda tmp0
+  clc
+  adc #$03
+  sta tmp3              ; BR
+
+  jmp @ene_draw_2x2      ; reuse existing 2x2 writer
+
+@explode_1x1:
+  cpy #OAM_DYNAMIC_LIMIT
+  bcc :+
+    jmp @ene_done
+  :
+
+  ; Y
+  lda ene_y,x
+  sta OAM_BUF,y
+  iny
+
+  lda tmp9
+  beq @ex1_t0
+  cmp #$01
+  beq @ex1_t1
+  lda #TILE_EXP1X1_2
+  bne @ex1_tile_ok
+@ex1_t0:
+  lda #TILE_EXP1X1_0
+  bne @ex1_tile_ok
+@ex1_t1:
+  lda #TILE_EXP1X1_1
+@ex1_tile_ok:
+  sta OAM_BUF,y
+  iny
+
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+
+  lda ene_x,x
+  sta OAM_BUF,y
+  iny
+
+  jmp @ene_next
+
+@not_exploding:
 
 
   ; decide size by type: C/D/E are 2x2 (type >= EN_C)
@@ -1246,7 +1359,8 @@ DrawBossBullets:
 ; - ignores dynamic Y cursor issues
 ; ------------------------------------------------------------
 DrawBossBullets_Fixed:
-  ldy #$E0        ; sprite #56 (56*4)
+  ldy #BOSS_BULLET_OAM_BASE
+
 
   ldx #$00
 @loop:

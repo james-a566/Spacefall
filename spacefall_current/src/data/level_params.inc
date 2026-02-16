@@ -129,14 +129,16 @@ PlayUpdate:
   rts
 
 @start_boss:
-  ; Enter boss phase: set state, flash, clear actors, init boss, show HP bar.
-  lda #STATE_BOSS
+  lda #STATE_BOSS_INTRO
   sta game_state
-  lda #FLASH_BOSS_START_FR
-  sta screen_flash_timer
 
-  jsr ClearActors
-  jsr BossSpawn
+  lda #$00
+  sta boss_intro_built
+
+  lda #BOSS_INTRO_FRAMES     ; e.g. 90 for 1.5s, 120 for 2s
+  sta boss_intro_timer
 
   rts
+
+
 

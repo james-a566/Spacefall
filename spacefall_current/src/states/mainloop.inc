@@ -41,6 +41,13 @@ MainLoop:
   bne :+
     jmp State_Play
   :
+
+  cmp #STATE_BOSS_INTRO
+  bne :+
+    jmp State_BossIntro
+:
+
+
   cmp #STATE_BOSS
   bne :+
     jmp State_Boss
