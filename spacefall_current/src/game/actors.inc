@@ -3,6 +3,13 @@
 ; - kills all bullets and enemies AND boss bullets
 ; ----------------------------
 ClearActors:
+  lda #$00
+  sta bul_any        ; if you have it
+  sta ene_any        ; if you have it
+  sta bul_count      ; if you add it
+  sta ene_count      ; if you add it
+  ; (boss bullets likely have their own count/any too)
+
   ; player bullets
   ldx #$00
 @b:
@@ -119,6 +126,10 @@ ClearCatch:
 ; - Also clears flash/hp so you don't get leftover death/hit visuals
 ; ------------------------------------------------------------
 ClearEnemies:
+  lda #$00
+  sta ene_count
+  sta ene_any        ; optional: keep flags consistent
+
   ldx #$00
 @loop:
   lda #$00

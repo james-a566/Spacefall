@@ -43,8 +43,8 @@ STATE_PLAY      = $01
 STATE_BOSS      = $02
 STATE_OVER      = $03
 STATE_TITLE     = $04
-STATE_PAUSE     = $05   ; pick an unused value
-STATE_TUTORIAL  = $06   ; pick a value not used
+STATE_PAUSE     = $05   ; 
+STATE_TUTORIAL  = $06   ; 
 STATE_INTRO     = $07
 
 STATE_BOSS_INTRO = $08
@@ -80,7 +80,7 @@ BANNER_OAM   = $80    ; sprite #32 * 4
 BANNER_ATTR  = $00
 BOSS_OAM  = $10          ;
 CATCH_OAM_BASE = $A0   ; sprite #40
-BOSS_BULLET_OAM_BASE = $DC   ; sprite 55
+BOSS_BULLET_OAM_BASE = $E0
 ; ------------------------------------------------------------
 ; Tile IDs
 ; ------------------------------------------------------------
@@ -268,7 +268,24 @@ BOSS_OAM_AFTER    = BOSS_OAM + BOSS_OAM_BYTES
 ; ------------------------------------------------------------
 SHIELD_FRAMES = 255   ; 
 
-BOSS_INTRO_FRAMES = 90
-BOSS_INTRO_TEXT_HI  = $21
-BOSS_INTRO_TEXT_LO  = $8A
-BOSS_INTRO_TEXT_LEN = 18   ; number of tiles you wrote
+BOSS_INTRO_FRAMES = 120
+
+
+BOSS_INTRO_ROW1 = 13
+BOSS_INTRO_ROW2 = 15
+
+BOSS_LINE1_LEN  = 11
+BOSS_LINE2_LEN  = 15
+
+BOSS_COL1 = (32 - BOSS_LINE1_LEN) / 2    ; 10
+BOSS_COL2 = (32 - BOSS_LINE2_LEN) / 2    ; 8
+
+BOSS_ADDR1 = $2000 + (BOSS_INTRO_ROW1*32) + BOSS_COL1
+BOSS_ADDR2 = $2000 + (BOSS_INTRO_ROW2*32) + BOSS_COL2
+
+BOSS1_HI = >(BOSS_ADDR1)
+BOSS1_LO = <(BOSS_ADDR1)
+BOSS2_HI = >(BOSS_ADDR2)
+BOSS2_LO = <(BOSS_ADDR2)
+
+

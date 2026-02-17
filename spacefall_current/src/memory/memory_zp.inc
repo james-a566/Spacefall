@@ -120,3 +120,14 @@ shield_timer: .res 1
 boss_intro_timer: .res 1
 boss_intro_built: .res 1
 bossintro_text_cleared: .res 1
+
+bul_any: .res 1   ; 0 = no bullets alive, 1 = at least one alive
+ene_any: .res 1   ; 0/1
+rand_frame: .res 1
+catch_any: .res 1   ; 0/1
+catch_count: .res 1   ; number of live catch objects
+ene_count: .res 1
+bul_count: .res 1
+
+boss_intro_blink: .res 1  ; 0/1 (put in your vars area)
+boss_intro_lastphase: .res 1

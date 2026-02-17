@@ -19,7 +19,7 @@ State_Banner:
 
 @banner_run:
   jsr BannerUpdate
-  jsr TextQ_End
+  jsr TextQ_EndIfDirty
   jsr BuildOAM
   jmp MainLoop
 
@@ -61,20 +61,43 @@ State_Play:
   jsr UpdateJamFlash
   jsr UpdatePlayer
   jsr UpdateBullets
-  jsr CollideBulletsCatch
+
+lda bul_any
+beq :+
+  lda catch_any
+  beq :+
+    jsr CollideBulletsCatch
+:
+
+  
   jsr UpdateShield
+
 
   jsr UpdateEnemies
 
-  jsr UpdateCatch
+jsr UpdateCatch
+lda catch_any
+beq :+
   jsr CollidePlayerCatch
+:
 
-  jsr CollideBulletsEnemies
-  jsr CollidePlayerEnemies
+
+
+  lda ene_any
+  beq :+
+    jsr CollidePlayerEnemies
+:
+  lda bul_any
+  beq :+
+    lda ene_any
+    beq :+
+      jsr CollideBulletsEnemies
+:
+
   jsr PlayUpdate
 
 @play_render_only:
-  jsr TextQ_End
+  jsr TextQ_EndIfDirty
   jsr BuildOAM
   jmp MainLoop
 
@@ -92,12 +115,9 @@ State_Boss:
       lda #$00
       sta bossbar_dirty
       jsr BossBar_QueueUpdate
-      jsr TextQ_End
+
 :
 
- 
-
-  
   lda #MUSIC_BOSS
   cmp current_music
   beq :+
@@ -132,9 +152,18 @@ State_Boss:
   jsr UpdatePlayer
   jsr UpdateBullets
 
-  jsr UpdateCatch
+jsr UpdateCatch
+lda catch_any
+beq :+
   jsr CollidePlayerCatch
-  jsr CollideBulletsCatch
+:
+
+lda bul_any
+beq :+
+  lda catch_any
+  beq :+
+    jsr CollideBulletsCatch
+:
 
   jsr BossUpdate
   jsr BossBigAttackFX
@@ -143,35 +172,113 @@ State_Boss:
   jsr CollideBulletsBoss
 
 @boss_render_only:
-  jsr TextQ_End
+  jsr TextQ_EndIfDirty
   jsr BuildOAM
   jmp MainLoop
 
+
 State_BossIntro:
 
-  ; ----------------------------
-  ; Build/queue text ONCE
-  ; ----------------------------
   lda boss_intro_built
   bne @run
 
-    lda #$01
-    sta boss_intro_built
+  ; ----------------------------
+  ; Entry: clear playfield actors NOW
+  ; ----------------------------
+  jsr ClearEnemies
+  jsr ClearCatch
+  jsr ClearPlayerBullets
+  jsr ClearBossBullets
 
-    jsr TextQ_Clear
+  lda #$01
+  sta boss_intro_built
 
-    lda #<Str_BossWarning
-    sta ptr0
-    lda #>Str_BossWarning
-    sta ptr0+1
+  lda #$00
+  sta boss_intro_blink
+  sta boss_intro_lastphase
 
-    lda #BOSS_INTRO_TEXT_HI
-    ldx #BOSS_INTRO_TEXT_LO
-    jsr TextQ_QueueStrZ
+  ; queue initial draw (visible)
+  jsr TextQ_Clear
 
-    jsr TextQ_End
+  lda #<Str_BossLine1
+  sta ptr0
+  lda #>Str_BossLine1
+  sta ptr0+1
+  lda #BOSS1_HI
+  ldx #BOSS1_LO
+  jsr TextQ_QueueStrZ
+
+  lda #<Str_BossLine2
+  sta ptr0
+  lda #>Str_BossLine2
+  sta ptr0+1
+  lda #BOSS2_HI
+  ldx #BOSS2_LO
+  jsr TextQ_QueueStrZ
+
+  jsr TextQ_End
 
 @run:
+  ; ----------------------------
+  ; Blink phase (toggle every 16 frames)
+  ; phase = (frame_lo & $10) ? 1 : 0
+  ; ----------------------------
+  lda frame_lo
+  and #$10
+  beq @phase0
+  lda #$01
+  bne @phase_ok
+@phase0:
+  lda #$00
+@phase_ok:
+  cmp boss_intro_lastphase
+  beq @timer          ; same phase -> no new VRAM writes
+
+  sta boss_intro_lastphase
+
+  ; queue either text or blanks
+  jsr TextQ_Clear
+
+  lda boss_intro_lastphase
+  beq @queue_text
+
+@queue_blanks:
+  lda #TILE_SPACE
+  sta tmp0
+
+  lda #BOSS1_HI
+  ldx #BOSS1_LO
+  ldy #BOSS_LINE1_LEN
+  jsr TextQ_QueueFill
+
+  lda #BOSS2_HI
+  ldx #BOSS2_LO
+  ldy #BOSS_LINE2_LEN
+  jsr TextQ_QueueFill
+
+  jsr TextQ_End
+  jmp @timer
+
+@queue_text:
+  lda #<Str_BossLine1
+  sta ptr0
+  lda #>Str_BossLine1
+  sta ptr0+1
+  lda #BOSS1_HI
+  ldx #BOSS1_LO
+  jsr TextQ_QueueStrZ
+
+  lda #<Str_BossLine2
+  sta ptr0
+  lda #>Str_BossLine2
+  sta ptr0+1
+  lda #BOSS2_HI
+  ldx #BOSS2_LO
+  jsr TextQ_QueueStrZ
+
+  jsr TextQ_End
+
+@timer:
   lda boss_intro_timer
   beq @go_boss
   dec boss_intro_timer
@@ -180,25 +287,27 @@ State_BossIntro:
   jmp MainLoop
 
 @go_boss:
-  ; ----------------------------
-  ; Clear intro text (queue once)
-  ; ----------------------------
+  ; clear the two lines once before leaving
   jsr TextQ_Clear
-  jsr BossIntro_QueueClearText
+
+  lda #TILE_SPACE
+  sta tmp0
+  lda #BOSS1_HI
+  ldx #BOSS1_LO
+  ldy #BOSS_LINE1_LEN
+  jsr TextQ_QueueFill
+
+  lda #BOSS2_HI
+  ldx #BOSS2_LO
+  ldy #BOSS_LINE2_LEN
+  jsr TextQ_QueueFill
+
   jsr TextQ_End
 
-  ; ----------------------------
-  ; Clear the playfield + spawn boss
-  ; ----------------------------
-  jsr ClearEnemies
-  jsr ClearCatch
-  jsr ClearPlayerBullets
-  jsr ClearBossBullets
-
+  ; spawn boss + switch state
   jsr BossSpawn
-
   lda #$00
-  sta boss_intro_built      ; so next time you enter, it rebuilds
+  sta boss_intro_built
   lda #STATE_BOSS
   sta game_state
 
@@ -206,21 +315,6 @@ State_BossIntro:
   jmp MainLoop
 
 
-Str_BossWarning:
-  .byte TILE_B, TILE_O, TILE_S, TILE_S, TILE_SPACE
-  .byte TILE_A, TILE_P, TILE_P, TILE_R, TILE_O, TILE_A, TILE_C, TILE_H, TILE_I,TILE_N, TILE_G
-  .byte $00
 
-; Clears exactly the same region your boss intro text uses.
-; Uses TextQ_QueueFill to write blank tiles.
 
-BossIntro_QueueClearText:
-  lda #$00
-  sta tmp0                 ; fill tile = blank (or TILE_SPACE)
-
-  lda #BOSS_INTRO_TEXT_HI
-  ldx #BOSS_INTRO_TEXT_LO
-  ldy #BOSS_INTRO_TEXT_LEN
-  jsr TextQ_QueueFill
-  rts
 

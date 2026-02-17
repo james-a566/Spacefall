@@ -76,8 +76,9 @@ TILE_DASH  = $2F   ; '-'
 
 ; ---- HUD hearts (BG) ----
 TILE_HEART_FULL  = $30
-TILE_HEART_EMPTY = $2E
+TILE_HEART_EMPTY = TILE_SPACE
 
+;TILE_WARN = $31
 ; ---- BG stars (reserve a block for expansion) ----
 TILE_STAR_0 = $40
 TILE_STAR_1 = $41
@@ -89,6 +90,8 @@ TILE_STAR_5 = $45
 
 ; ---- BG reserved / future ----
 ; $50-$7F reserved
+
+  
 
 
 ; ------------------------------------------------------------

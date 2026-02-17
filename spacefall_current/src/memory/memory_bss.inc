@@ -190,3 +190,5 @@ play_entered:    .res 1
 
 tutorial_done: .res 1   ; 0 = not shown this run, 1 = already shown
 
+fill_buf: .res 64        ; max fill length (match your cap)
+

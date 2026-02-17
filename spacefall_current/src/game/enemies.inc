@@ -59,6 +59,7 @@ SpawnEnemy:
 @use:
   lda #$01
   sta ene_alive,x
+  inc ene_count
 
   ; ------------------------------------------------
   ; Spawn Y
@@ -303,18 +304,8 @@ SpawnEnemy:
 ; UpdateEnemies
 ; ----------------------------
 UpdateEnemies:
-
-  ; ----------------------------------------------------------
-  ; Per-frame enemy update flow:
-  ;   1) Handle spawn cooldown (spawn_cd)
-  ;   2) For each active slot:
-  ;        - store prev Y
-  ;        - apply vertical fall (level_enemy_spd + per-slot tweaks)
-  ;        - apply type-specific behavior (EN_A..EN_E)
-  ;        - kill if past ENEMY_KILL_Y
-  ; ----------------------------------------------------------
-
-
+  lda #$00
+  sta ene_any
 
   ; ---- spawn cooldown ----
   lda spawn_cd
@@ -326,6 +317,9 @@ UpdateEnemies:
   jsr SpawnEnemy
   lda level_enemy_cd
   sta spawn_cd
+
+  jsr NextRand
+  sta rand_frame
 
 
 
@@ -341,6 +335,10 @@ UpdateEnemies:
   bne :+
     jmp @next
   :
+
+  lda #$01
+  sta ene_any
+
 
   ; ----------------------------
   ; DYING FLASH (enemy was shot)
@@ -396,23 +394,21 @@ jmp @next
   ; behavior select (extras only)
   ; ----------------------------
   lda ene_type,x
-  cmp #EN_B
-  bne :+
-    jmp @beh_B
-  :
-  cmp #EN_C
-  bne :+
-    jmp @beh_C
-  :
-  cmp #EN_D
-  bne :+
-    jmp @beh_D
-  :
-  cmp #EN_E
-  bne :+
-    jmp @beh_E
-  :
-  jmp @after_behaviors      ; EN_A/default: nothing else
+  asl a              ; *2 (word table)
+  tay
+  lda @EneBehaviorTable,y
+  sta ptr0
+  lda @EneBehaviorTable+1,y
+  sta ptr0+1
+  jmp (ptr0)
+
+@EneBehaviorTable:
+  .word @after_behaviors
+  .word @beh_B
+  .word @beh_C
+  .word @beh_D
+  .word @beh_E
+
 
 @beh_B:
   lda ene_timer,x
@@ -579,8 +575,9 @@ jmp @next
 :
 
 @d_maybe_rearm:
-  jsr NextRand
+  lda rand_frame
   cmp #$20
+
   bcs @after_behaviors
   lda #$08
   sta ene_timer,x

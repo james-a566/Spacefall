@@ -1,3 +1,5 @@
+; src/system/nmi
+
 .segment "CODE"
 
 NMI:
@@ -11,9 +13,7 @@ NMI:
   bne :+
     inc frame_hi
 :
-
-  ; optional: move to main loop if you want more vblank slack
-  jsr NextRand
+  
 
   ; ---- OAM DMA ----
   lda #$00
@@ -57,28 +57,28 @@ NMI:
     jsr Pause_NMI_Update
 :
 
-  pla
-  tay
-  pla
-  tax
-  pla
+pla
+tay
+pla
+tax
+pla
 
-  ; ---- hard reset scroll every frame ----
-  lda PPUSTATUS
-  lda #$00
-  sta PPUSCROLL
-  sta PPUSCROLL
+; ---- hard reset scroll every frame ----
+lda PPUSTATUS
+lda #$00
+sta PPUSCROLL
+sta PPUSCROLL
 
-  lda ppuctrl_shadow
-  and #%11111100
-  ora #%10000000
-  sta ppuctrl_shadow
-  sta PPUCTRL
+lda ppuctrl_shadow
+and #%11111100
+sta ppuctrl_shadow
+sta PPUCTRL
 
-  lda #$01
-  sta nmi_ready
 
-  rti
+lda #$01
+sta nmi_ready
+
+rti
 
 IRQ:
   rti

@@ -53,30 +53,26 @@ ClearOAMShadow:
 ; ------------------------------------------------------------
 
 BuildOAM:
+  lda game_state
+  cmp #STATE_TITLE
+  bne :+
+    jmp @clear_and_done
+  :
+  cmp #STATE_OVER
+  bne :+
+    jmp @clear_and_done
+  :
+
   jsr ClearOAMShadow
 
   lda game_state
   cmp #STATE_TUTORIAL
-  bne @check_title
-    jsr DrawTutorialIconSprites
-    tya
-    tax                  ; X = first unused OAM byte offset
-    jmp @hide_tail
-
-@check_title:
-  cmp #STATE_TITLE
-  bne @check_over
-    rts
-
-@check_over:
-  lda game_state
-  cmp #STATE_OVER
   bne @normal_draw
-    rts
+    jsr DrawTutorialIconSprites
+    rts                 ; no need for hide_tail if you clear each frame
 
 @normal_draw:
   
-
   ; ----------------------------
   ; Player metasprite (sprites 0-3)
   ; ----------------------------
@@ -208,9 +204,8 @@ BuildOAM:
 
   ; ------------------------------------------------------------
   ; Bullet OAM start
-  ; - Normal play: bullets start at BULLET_OAM_BASE ($10)
-  ; - Boss fight: boss metasprite uses BOSS_OAM..(BOSS_OAM_AFTER-1)
-  ;              so bullets must start at BOSS_OAM_AFTER
+  ; 
+  ; 
   ; ------------------------------------------------------------
   lda game_state
   cmp #STATE_BOSS
@@ -908,9 +903,8 @@ lda #TILE_PBULLET_0
   jmp @after_banner
 
 @draw_banner:
-  cpy #OAM_DYNAMIC_LIMIT
-  bcs @after_banner
-  jsr DrawLevelBannerSprites
+  
+  jsr DrawLevelBannerSprites_Fixed
 
 @after_banner:
 
@@ -923,7 +917,7 @@ lda #TILE_PBULLET_0
     ldy #BOSS_OAM
     jsr DrawBossSprites     ; uses Y as current OAM offset
 
-    jsr DrawBossBullets_Fixed   ; sprites 56–59 ($E0..$EF)
+    jsr DrawBossBullets_Fixed   
 @after_boss_draw:
 
    ; --------------------------------------------
@@ -939,17 +933,11 @@ lda #TILE_PBULLET_0
 :
   tax
 
-
-@hide_tail:
-  lda #$FE
-  sta OAM_BUF,x
-  inx
-  inx
-  inx
-  inx
-  bne @hide_tail
   rts
 
+@clear_and_done:
+  jsr ClearOAMShadow
+  rts
 
 ; ------------------------------------------------------------
 ; DrawCatchSprites
@@ -1015,7 +1003,7 @@ DrawCatchSprites:
 ; - Draws “LEVEL N” where N is 1..99 (works fine for 1..12)
 ; - Digits are tiles TILE_DIGIT_BASE + 0..9
 ; ------------------------------------------------------------
-DrawLevelBannerSprites:
+DrawLevelBannerSprites_Fixed:
   ldx #BANNER_OAM
 
   lda #BANNER_X0
@@ -1514,19 +1502,7 @@ sta OAM_BUF+20,x
 sta OAM_BUF+24,x 
 rts
 
-  ; Hides the 5 score digit sprites (sprites 59..63 at OAM $EC..$FF)
-; ------------------------------------------------------------
-; HideScoreSprites
-; - Hides all score sprites by setting their Y=$FE
-; ------------------------------------------------------------
-HideScoreSprites:
-  lda #$FE
-  sta OAM_BUF+$EC     ; sprite 59 Y
-  sta OAM_BUF+$F0     ; sprite 60 Y
-  sta OAM_BUF+$F4     ; sprite 61 Y
-  sta OAM_BUF+$F8     ; sprite 62 Y
-  sta OAM_BUF+$FC     ; sprite 63 Y
-  rts
+
 
 
 

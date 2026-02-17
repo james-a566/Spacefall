@@ -329,6 +329,9 @@ FireBulletLR:
 ; - Kills bullets that leave the top
 ; ------------------------------------------------------------
 UpdateBullets:
+  lda #$00
+  sta bul_any
+
   ldx #$00
 @loop:
   cpx #BULLET_MAX
@@ -337,18 +340,20 @@ UpdateBullets:
   lda bul_alive,x
   beq @next
 
+  lda #$01
+  sta bul_any
+
   ; store previous Y for swept collision
   lda bul_y,x
   sta bul_y_prev,x
 
   ; move up
   sec
-  sbc #BULLET_SPD          ; bullet speed (px/frame)
+  sbc #BULLET_SPD
   sta bul_y,x
 
-  bcc @kill   ; carry clear => wrapped past 0 => offscreen
+  bcc @kill
 
-  ; optional extra safety: also kill if very near top
   cmp #BULLET_KILL_Y
   bcs @next
 
@@ -361,6 +366,7 @@ UpdateBullets:
   bne @loop
 @done:
   rts
+
 
 
 

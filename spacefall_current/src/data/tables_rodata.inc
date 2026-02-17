@@ -160,6 +160,25 @@ BlinkBlanks:
   .endrepeat
 
 
+; ----------------------------
+; Boss Intro
+; ----------------------------
+; Pick a placeholder tile for now.
+; Later replace TILE_WARN with your triangle/exclamation tile.
+TILE_WARN = TILE_SPACE   ; TEMP until you have the symbol tile
+
+Str_BossLine1:
+  .byte TILE_WARN, TILE_SPACE
+  .byte TILE_W, TILE_A, TILE_R, TILE_N, TILE_I, TILE_N, TILE_G
+  .byte TILE_SPACE, TILE_WARN
+  .byte $00
+
+Str_BossLine2:
+  .byte TILE_I, TILE_N, TILE_C, TILE_O, TILE_M, TILE_I, TILE_N, TILE_G
+  .byte TILE_SPACE
+  .byte TILE_T, TILE_H, TILE_R, TILE_E, TILE_A, TILE_T
+  .byte $00
+
 
 
 ; ----------------------------

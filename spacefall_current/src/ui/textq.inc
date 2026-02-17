@@ -60,52 +60,91 @@ TextQ_QueueBlanks:
   rts
 
 
-
+; ------------------------------------------------------------
+; TextQ_QueueWrite (atomic + whole-command fit)
+; Inputs:
+; A = VRAM hi
+; X = VRAM lo
+; Y = len
+; ptr0 = source data
+; Effects:
+; - Either enqueues a whole command, or drops it cleanly.
+; - Updates textq_w only once (atomic with respect to NMI reading textq_w).
+; ------------------------------------------------------------
 TextQ_QueueWrite:
-  sta textq_hi
-  stx textq_lo
-  sty textq_len
+sta textq_hi
+stx textq_lo
+sty textq_len
+; required = 3 + len
+tya
+clc
+adc #3
+sta tmp0 ; tmp0 = required bytes
+; remaining = TEXTQ_BUF_SIZE - textq_w
+lda #TEXTQ_BUF_SIZE
+sec
+sbc textq_w
+cmp tmp0
+bcc @drop_cmd ; not enough space => drop whole command
+; X = write cursor (local), do not store to textq_w until the end
+ldx textq_w
+; header
+lda textq_hi
+sta textq_buf,x
+inx
+lda textq_lo
+sta textq_buf,x
+inx
+lda textq_len
+sta textq_buf,x
+inx
+; payload
+ldy #$00
+@cpy:
+cpy textq_len
+bcs @commit
+lda (ptr0),y
+sta textq_buf,x
+inx
+iny
+bne @cpy
 
-  ; required = 3 + len
-  tya
-  clc
-  adc #3
-  sta tmp0
-  jsr TextQ_CanFit
-  bcc @drop_cmd
-
-  ; push header
-  lda textq_hi
-  jsr TextQ_PushByte
-  lda textq_lo
-  jsr TextQ_PushByte
-  lda textq_len
-  jsr TextQ_PushByte
-
-  ; push data
-  ldy #$00
-@data:
-  cpy textq_len
-  bcs @done
-  lda (ptr0),y
-  jsr TextQ_PushByte
-  iny
-  bne @data
-@done:
-  rts
-
+@commit:
+stx textq_w ; single atomic commit of new write pointer
+rts
 @drop_cmd:
+rts
+
+
+TextQ_EndIfDirty:
+  lda textq_w
+  beq @no
+  jsr TextQ_End
+@no:
   rts
+
 
 
 TextQ_End:
-  lda #$00
-  jsr TextQ_PushByte   ; hi
-  lda #$00
-  jsr TextQ_PushByte   ; lo
-  lda #$00             ; LEN MUST BE ZERO
-  jsr TextQ_PushByte
+  ; required = 3
+  lda #TEXTQ_BUF_SIZE
+  sec
+  sbc textq_w
+  cmp #3
+  bcc @drop
+
+  ldx textq_w
+  lda #0
+  sta textq_buf,x
+  inx
+  sta textq_buf,x
+  inx
+  sta textq_buf,x
+  inx
+  stx textq_w
+@drop:
   rts
+
 
 
 ; ------------------------------------------------------------
@@ -270,102 +309,46 @@ TextQ_QueueStrZ:
   jsr TextQ_QueueWrite
   rts
 
-; ------------------------------------------------------------
-; TextQ_QueueWriteZ
-; - Queues a VRAM write for a 0-terminated string at (ptr0)
-; - Inputs: A=hi, X=lo, ptr0=str
-; - Uses: Y, tmp0
-; ------------------------------------------------------------
+
+
+
 TextQ_QueueWriteZ:
-  sta textq_hi
-  stx textq_lo
+jmp TextQ_QueueStrZ
 
-  ; tmp0 = len
-  ldy #$00
-@count:
-  lda (ptr0),y
-  beq @count_done
-  iny
-  bne @count
-@count_done:
-  sty tmp0
 
-  ; queue header: hi, lo, len
-  lda textq_hi
-  jsr TextQ_PushByte
-  lda textq_lo
-  jsr TextQ_PushByte
-  lda tmp0
-  jsr TextQ_PushByte
 
-  ; queue data bytes
-  ldy #$00
-@data:
-  cpy tmp0
-  bcs @done
-  lda (ptr0),y
-  jsr TextQ_PushByte
-  iny
-  bne @data
-
-@done:
-  rts
-
-; ------------------------------------------------------------
-; TextQ_QueueFill
-; - Queue a VRAM write that fills LEN bytes with the same tile.
-; INPUT:
-;   A = VRAM hi
-;   X = VRAM lo
-;   Y = len
-;   tmp0 = fill byte (tile id)
-; ------------------------------------------------------------
 TextQ_QueueFill:
   sta textq_hi
   stx textq_lo
   sty textq_len
 
-  lda textq_hi
-  jsr TextQ_PushByte
-  lda textq_lo
-  jsr TextQ_PushByte
-  lda textq_len
-  jsr TextQ_PushByte
+  ; cap len to 64 (safety)
+  cpy #64
+  bcc :+
+    ldy #64
+:
+  sty textq_len
 
-  ldy textq_len
-  beq @done
-
-@loop:
+  ; build fill buffer
+  ldy #$00
+@mk:
+  cpy textq_len
+  bcs @ready
   lda tmp0
-  jsr TextQ_PushByte
-  dey
-  bne @loop
+  sta fill_buf,y
+  iny
+  bne @mk
 
-@done:
-  rts
+@ready:
+  lda #<fill_buf
+  sta ptr0
+  lda #>fill_buf
+  sta ptr0+1
+
+  lda textq_hi
+  ldx textq_lo
+  ldy textq_len
+  jmp TextQ_QueueWrite
 
 
-; ------------------------------------------------------------
-; TextQ_CanFit
-; Input: A = required bytes
-; Output: C=1 if can fit, C=0 if not
-; Clobbers: X
-; ------------------------------------------------------------
-TextQ_CanFit:
-  ldx textq_w
-  txa
-  clc
-  adc #$00            ; A = textq_w (kept simple if you want)
-  ; We want: textq_w + required <= TEXTQ_BUF_SIZE
-  ; So: required <= TEXTQ_BUF_SIZE - textq_w
-  lda #TEXTQ_BUF_SIZE
-  sec
-  sbc textq_w         ; A = remaining
-  ; Compare remaining (A) with required (in tmp0)
-  cmp tmp0
-  bcs @yes
-  clc
-  rts
-@yes:
-  sec
-  rts
+

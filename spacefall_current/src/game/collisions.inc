@@ -182,12 +182,13 @@ CollideBulletsEnemies:
   lda EnemyScore_HTO+2,x
   sta tmp0
 
-  jsr AddScoreHTO
+   jsr AddScoreHTO
 
   pla
   tax                            ; RESTORE bullet index X
 
-  jmp @bul_next
+  jmp @ene_next                  ; enemy is dead → stop checking other bullets
+
 
 @enemy_survives:
   ; ============================
@@ -209,7 +210,7 @@ CollideBulletsEnemies:
 
 
 @already_dead:
-  jmp @bul_next
+  jmp @ene_next
 
 @bul_next:
   inx
@@ -223,220 +224,6 @@ CollideBulletsEnemies:
   rts
 
 
-
-
-
-
-
-
-
-
-
-CollideBulletsEnemies_old:
-  ; Uses simple AABB overlap. Enemy hitbox is currently treated as 8x8.
-  ldx #$00                  ; bullet index
-@bul_loop:
-  cpx #BULLET_MAX
-  bcc :+
-    jmp @done
-  :
-
-  lda bul_alive,x
-  bne :+
-    jmp @bul_next
-  :
-  ldy #$00                  ; enemy index
-@ene_loop:
-  cpy #ENEMY_MAX
-  bcc :+
-    jmp @bul_next             ; done checking this bullet
-:
-
-  lda ene_alive,y
-  bne :+
-    jmp @ene_next
-  :
-
-; X check
-  jsr GetEnemyExtent
-  sta tmp2              ; 7 or 15
-
-  lda tmp2
-  clc
-  adc #$01
-  sta tmp3            ; size = extent+1 => 8 or 16
-
-  ; tmp3 = enemy size (8 or 16) must already be set
-  ; compute enemy_right = ene_x + (size-1)
-  lda ene_x,y
-  clc
-  adc tmp3
-  sec
-  sbc #$01
-  sta tmp0              ; tmp0 = enemy_right
-
-  ; compute bullet_right = bul_x + 7
-  lda bul_x,x
-  clc
-  adc #$07
-  sta tmp1              ; tmp1 = bullet_right
-
-  ; if bul_x > enemy_right -> no hit
-  lda bul_x,x
-  cmp tmp0
-  bcc :+
-    jmp @ene_next         ; bul_x >= enemy_right+1 (since enemy_right is inclusive)
-:
-  ; if ene_x > bullet_right -> no hit
-  lda ene_x,y
-  cmp tmp1
-  bcc :+
-    jmp @ene_next
-  :
-
-
-
-
-
-  ; ---- Y check (swept with bullet height) ----
-  ; bullet_top_now = bul_y
-  ; bullet_bottom_prev = bul_y_prev + 7
-  ; enemy_bottom_now = ene_y + 7
-  ; enemy_top_prev = ene_y_prev
-
-  lda ene_y,y
-  clc
-  adc tmp2              ; enemy_bottom_now = ene_y + extent
-  sta tmp
-
-
-  ; bullet_top_now <= enemy_bottom_now ?
-  lda bul_y,x
-  cmp tmp
-  bcc @y_ok
-  beq @y_ok
-  jmp @ene_next
-
-@y_ok:
-  ; bullet_bottom_prev >= enemy_top_prev ?
-  lda bul_y_prev,x
-  clc
-  adc #$07              ; or (BULLET_H-1)
-  cmp ene_y_prev,y
-  bcc @ene_next
-
-
-  ; ---- HIT! ----
-@hit:
-  
-
-  ; kill bullet
-  lda #$00
-  sta bul_alive,x
-
-  ; ---- shield check (Enemy E) ----
-  lda ene_type,y
-  cmp #EN_E
-  bne @apply_damage
-
-  lda ene_variant,y
-  beq @apply_damage       ; 0 = unshielded => damage ok
-
-  ; shielded: no damage (but bullet already got consumed)
-  lda #ENEMY_HIT_FLASH_FR
-  sta ene_flash,y         ; optional: give feedback
-  jmp @bul_next
-
-@apply_damage:
-
-
-  ; ---- apply damage ----
- lda ene_hp,y
-beq @already_dead
-
-sec
-sbc #$01
-sta ene_hp,y
-bne @enemy_survives
-
-
-  ; ============================
-  ; ENEMY DIES (hp reached 0)
-  ; - “death flash” 
-  ; ============================
-  ; preserve enemy index Y across SFX (you already did this)
-  sty tmp5
-
-  ; ALSO preserve bullet index X across SFX
-  txa
-  pha
-  jsr PlaySfxExplode
-  pla
-  tax
-
-  ldy tmp5
-
-
-  ; ---- add score based on enemy type ----
-  txa
-  pha                 ; SAVE bullet index X
-
-  ldx ene_type,y
-  cpx #$05
-  bcc :+
-    ldx #EN_A
-:
-  txa
-  asl a
-  clc
-  adc ene_type,y
-  tax
-
-  lda EnemyScore_HTO,x
-  sta tmp2
-  lda EnemyScore_HTO+1,x
-  sta tmp1
-  lda EnemyScore_HTO+2,x
-  sta tmp0
-
-  jsr AddScoreHTO
-
-  pla
-  tax                 ; RESTORE bullet index X
-
-  jmp @bul_next
-
-
-
-@enemy_survives:
-  ; ============================
-  ; ENEMY HIT (still alive)
-  ; - short hit flash, do NOT die when flash ends
-  ; - play hit SFX
-  ; ============================
-  lda #ENEMY_HIT_FLASH_FR
-  sta ene_flash,y
-
-  jsr PlaySfxEnemyHit      ; NOISE hit tick
-  jmp @bul_next
-
-@already_dead:
-  jmp @bul_next
-
-
-@ene_next:
-  iny
-  beq :+
-    jmp @ene_loop
-  :
-
-@bul_next:
-  inx
-  beq :+
-    jmp @bul_loop
-:
-@done:
-  rts
 
 ; ----------------------------
 ; CollidePlayerEnemies
@@ -498,8 +285,13 @@ bne CPE_NextEnemy
 
 
   ; ---- HIT ----
-  lda #FLAG_CLEAR
-  sta ene_alive,y
+    lda ene_alive,y
+  beq :+
+    lda #$00
+    sta ene_alive,y
+    dec ene_count
+:
+
 
   lda ene_x,y
   sta hit_src_x
@@ -516,7 +308,15 @@ bne CPE_NextEnemy
   ; optional: show flash color you use for shield
   lda #$11
   sta catch_pickup_flash  ; or a dedicated shield_flash if you have one
-  jsr PlaySfxPickup       ; or make a PlaySfxShield
+  
+  
+  
+   txa
+  pha
+  jsr PlaySfxPickup
+  pla
+  tax
+
 
   rts
 
@@ -651,7 +451,13 @@ CollidePlayerCatch:
   ; common feedback
   lda #$11
   sta catch_pickup_flash
+
+   txa
+  pha
   jsr PlaySfxPickup
+  pla
+  tax
+
 
   ; everyone gets +1 life
   jsr AwardLifePlus1
