@@ -91,16 +91,21 @@ sta debug_force_type
 
   lda #$00       ; starting level
   sta level_idx
- jsr LoadLevelParams
+  jsr LoadLevelParams
 
-   jsr ReseedCatchSpawn
+  jsr ReseedCatchSpawn
 
-  jsr ClearActors          ; (ok)
+  jsr ClearActors          
 
   lda #60
   sta level_banner
   lda #STATE_BANNER
   sta game_state
+
+  ; lda #LEVEL_FINAL_IDX
+  ; sta level_idx
+  ; jsr EnterFinalLevel
+  ; rts
 
   ; use level params for spawns/timing
   lda level_spawn_cd

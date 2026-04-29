@@ -97,7 +97,17 @@ NextLevel:
 
 
     inc level_idx
-    jsr LoadLevelParams
+
+  lda level_idx
+  cmp #LEVEL_FINAL_IDX
+  bne @normal_next_level
+
+    jsr EnterFinalLevel
+    rts
+
+@normal_next_level:
+  jsr LoadLevelParams
+
     jsr EnterLevelStart
     rts
 
@@ -114,6 +124,11 @@ BannerUpdate:
 
 
 PlayUpdate:
+
+  lda level_idx
+  cmp #LEVEL_FINAL_IDX
+  beq @done
+
   ; decrement boss timer and switch to boss
   lda boss_timer_lo
   bne @dec_lo
@@ -122,6 +137,9 @@ PlayUpdate:
   dec boss_timer_hi
   lda #$FF
   sta boss_timer_lo
+
+  @done:
+
   rts
 
 @dec_lo:
@@ -142,3 +160,46 @@ PlayUpdate:
 
 
 
+EnterFinalLevel:
+  jsr ClearActors
+  jsr ClearBossBullets
+  jsr ClearPlayerBullets
+
+  lda #$00
+  sta catch_cd
+  sta catch_any
+  sta ene_any
+  sta bul_any
+  sta boss_alive
+  sta boss_intro_built
+  sta ending_built
+
+  ; IMPORTANT: prevent boss timer from triggering
+  lda #$FF
+  sta boss_timer_lo
+  sta boss_timer_hi
+
+  ; clear all catches
+  ldx #$00
+@clr_catches:
+  cpx #CATCH_MAX
+  bcs @clr_catches_done
+
+  lda #$00
+  sta catch_alive,x
+  sta catch_x,x
+  sta catch_y,x
+
+  inx
+  jmp @clr_catches
+
+@clr_catches_done:
+  lda #60
+  sta level_banner
+
+  lda #$00
+  sta banner_built
+
+  lda #STATE_BANNER
+  sta game_state
+  rts

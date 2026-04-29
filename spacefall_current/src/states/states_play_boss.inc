@@ -30,7 +30,6 @@ State_Banner:
 ; ----------------------------
 State_Play:
 
- 
   lda #MUSIC_GAMEPLAY
   cmp current_music
   beq :+
@@ -57,36 +56,53 @@ State_Play:
     jmp @play_render_only
 :
 
+  ; ---- FINAL LEVEL: only player + final core ----
+    lda level_idx
+  cmp #LEVEL_FINAL_IDX
+  bne @normal_play_update
+
+    jsr UpdateCatchPickupFlash
+    jsr UpdateJamFlash
+    jsr UpdatePlayer
+    jsr UpdateBullets
+
+      lda catch_alive
+  bne :+
+    jsr SpawnFinalCore
+:
+
+    jsr UpdateFinalCatch
+    jsr CollidePlayerCatch
+
+    jmp @play_render_only
+
+@normal_play_update:
   jsr UpdateCatchPickupFlash
   jsr UpdateJamFlash
   jsr UpdatePlayer
   jsr UpdateBullets
 
-lda bul_any
-beq :+
-  lda catch_any
+  lda bul_any
   beq :+
-    jsr CollideBulletsCatch
+    lda catch_any
+    beq :+
+      jsr CollideBulletsCatch
 :
 
-  
   jsr UpdateShield
-
-
   jsr UpdateEnemies
 
-jsr UpdateCatch
-lda catch_any
-beq :+
-  jsr CollidePlayerCatch
+  jsr UpdateCatch
+  lda catch_any
+  beq :+
+    jsr CollidePlayerCatch
 :
-
-
 
   lda ene_any
   beq :+
     jsr CollidePlayerEnemies
 :
+
   lda bul_any
   beq :+
     lda ene_any
@@ -316,5 +332,169 @@ State_BossIntro:
 
 
 
+State_BossDefeated:
+  lda boss_defeat_built
+  bne @run
+
+  ; ----------------------------
+  ; one-time init on entry
+  ; ----------------------------
+  lda #$01
+  sta boss_defeat_built
+
+  lda #120                 ; 2 seconds (tune)
+  sta boss_defeat_timer
+
+  ; clear the playfield so it feels like a clean victory beat
+  jsr ClearEnemies
+  jsr ClearCatch
+  jsr ClearPlayerBullets
+  jsr ClearBossBullets
+
+  ; queue text once
+  jsr TextQ_Clear
+
+  lda #<Str_ThreatDefeated
+  sta ptr0
+  lda #>Str_ThreatDefeated
+  sta ptr0+1
+
+  lda #BOSS_DEFEAT_HI
+  ldx #BOSS_DEFEAT_LO
+  jsr TextQ_QueueStrZ
+
+  jsr TextQ_End
+  jmp @render
+
+@run:
+  lda boss_defeat_timer
+  beq @go_next
+  dec boss_defeat_timer
+
+  ; ----------------------------
+  ; BLINK (optional)
+  ; If you don't want blink, delete this whole block.
+  ; ----------------------------
+  lda frame_lo
+  and #$10              ; toggle every 16 frames (tune: $08 faster, $20 slower)
+  beq @blink_show
+
+@blink_hide:
+  jsr TextQ_Clear
+  jsr BossDefeat_QueueClearText
+  jsr TextQ_End
+  jmp @render
+
+@blink_show:
+  jsr TextQ_Clear
+  lda #<Str_ThreatDefeated
+  sta ptr0
+  lda #>Str_ThreatDefeated
+  sta ptr0+1
+  lda #BOSS_DEFEAT_HI
+  ldx #BOSS_DEFEAT_LO
+  jsr TextQ_QueueStrZ
+  jsr TextQ_End
+  ; fallthrough
+
+@render:
+  jsr BuildOAM
+  jmp MainLoop
+
+@go_next:
+  ; clear the text once so it doesn't linger into banner
+  jsr TextQ_Clear
+  jsr BossDefeat_QueueClearText
+  jsr TextQ_End
+
+  lda #$00
+  sta boss_defeat_built
+
+  jsr NextLevel           ; your existing flow: LoadLevelParams + EnterLevelStart
+  jsr BuildOAM
+  jmp MainLoop
+
+BossDefeat_QueueClearText:
+  lda #$00
+  sta tmp0                 ; blank tile (or TILE_SPACE if you prefer)
+
+  lda #BOSS_DEFEAT_HI
+  ldx #BOSS_DEFEAT_LO
+  ldy #BOSS_DEFEAT_LEN
+  jsr TextQ_QueueFill
+  rts
 
 
+
+State_Ending:
+  lda ending_built
+  bne @ending_run
+
+    jsr PPU_BeginVRAM
+      jsr ClearNametable0
+      jsr DrawStarfieldNT0
+      jsr ClearAttributesNT0
+    jsr PPU_EndVRAM
+
+    lda #$01
+    sta ending_built
+    lda #$00
+    sta ending_step
+    lda #$20
+    sta ending_timer
+
+@ending_run:
+  lda ending_step
+  cmp #$03
+  bcs @input
+
+  lda ending_timer
+  beq @draw_next
+  dec ending_timer
+  jmp @input
+
+@draw_next:
+  jsr PPU_BeginVRAM
+
+    lda ending_step
+    cmp #$00
+    bne :+
+      lda #<TextPage_Ending1
+      sta ptr1
+      lda #>TextPage_Ending1
+      sta ptr1+1
+      jsr Text_DrawPage_Manual
+      jmp @line_done
+:
+    cmp #$01
+    bne :+
+      lda #<TextPage_Ending2
+      sta ptr1
+      lda #>TextPage_Ending2
+      sta ptr1+1
+      jsr Text_DrawPage_Manual
+      jmp @line_done
+:
+    lda #<TextPage_Ending3
+    sta ptr1
+    lda #>TextPage_Ending3
+    sta ptr1+1
+    jsr Text_DrawPage_Manual
+
+@line_done:
+  jsr PPU_EndVRAM
+
+  inc ending_step
+  lda #$30
+  sta ending_timer
+
+@input:
+  lda pad1_new
+  and #BTN_START
+  beq @ending_draw
+
+    jsr ReturnToTitle
+
+@ending_draw:
+  jsr BuildOAM
+  jmp MainLoop

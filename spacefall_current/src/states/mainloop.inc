@@ -27,7 +27,7 @@ MainLoop:
 .endif
 
   lda game_state
-  cmp #$09          ; number of entries (0..8)
+  cmp #STATE_COUNT          ; number of entries
   bcc :+
     lda #STATE_TITLE ;
     sta game_state
@@ -41,12 +41,14 @@ MainLoop:
   jmp (ptr0)
 
 StateJumpTable:
-  .word State_Banner      ; $00
-  .word State_Play        ; $01
-  .word State_Boss        ; $02
-  .word State_Over        ; $03
-  .word State_Title       ; $04
-  .word State_Pause       ; $05
-  .word State_Tutorial    ; $06
-  .word State_Intro       ; $07
-  .word State_BossIntro   ; $08
+  .word State_Banner       ; $00
+  .word State_Play         ; $01
+  .word State_Boss         ; $02
+  .word State_Over         ; $03
+  .word State_Title        ; $04
+  .word State_Pause        ; $05
+  .word State_Tutorial     ; $06
+  .word State_Intro        ; $07
+  .word State_BossIntro    ; $08
+  .word State_BossDefeated ; $09
+  .word State_Ending       ; $0A

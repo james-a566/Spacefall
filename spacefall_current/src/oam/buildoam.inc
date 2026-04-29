@@ -908,16 +908,23 @@ lda #TILE_PBULLET_0
 
 @after_banner:
 
-  ; ---- BOSS sprites + boss bullets (boss state only) ----
-  ; Draw boss LAST so enemies/catch/banner can't overwrite it.
   lda game_state
   cmp #STATE_BOSS
-  bne @after_boss_draw
+  beq @draw_boss
+  cmp #STATE_BOSS_DEFEATED
+  beq @draw_boss_outro
+  jmp @after_boss_draw
 
-    ldy #BOSS_OAM
-    jsr DrawBossSprites     ; uses Y as current OAM offset
+@draw_boss:
+  ldy #BOSS_OAM
+  jsr DrawBossSprites
+  jsr DrawBossBullets_Fixed
+  jmp @after_boss_draw
 
-    jsr DrawBossBullets_Fixed   
+@draw_boss_outro:
+  ldy #BOSS_OAM
+  jsr DrawBossDeathExplosions
+  ; (no boss bullets)
 @after_boss_draw:
 
    ; --------------------------------------------
@@ -1300,6 +1307,207 @@ DrawBossSprites:
   rts
 
 ; ------------------------------------------------------------
+; DrawBossDeathExplosions
+; - Uses boss_x/boss_y as anchor
+; - Consumes exactly 9 sprites (same as boss 3x3)
+; - Layout:
+;   2x2 explosion at (boss_x, boss_y)      -> 4 sprites
+;   2x2 explosion at (boss_x+8, boss_y)    -> 4 sprites
+;   1x1 spark at  (boss_x+8, boss_y+8)     -> 1 sprite
+; - Input:  Y = OAM cursor (should be BOSS_OAM)
+; - Output: Y advanced
+; ------------------------------------------------------------
+DrawBossDeathExplosions:
+  ; ---- choose explosion frame 0..2 ----
+  ; frame = (boss_outro_timer >> 3) & 3, clamp to 2
+  lda boss_defeat_timer
+  lsr
+  lsr
+  lsr
+  and #$03
+  cmp #$03
+  bcc :+
+    lda #$02
+:
+  sta tmp9                 ; tmp9 = 0..2
+
+  ; ---- attr (palette 2 suggested) ----
+  lda #BOSS_ATTR
+  and #%11111100
+  ora #$02                 ; palette 2
+  sta tmp4                 ; tmp4 = attr
+
+  ; ============================
+  ; Explosion #1 (left) at boss_x, boss_y
+  ; ============================
+  lda boss_x
+  sta tmp5                 ; x0
+  clc
+  adc #$08
+  sta tmp6                 ; x1
+
+  lda boss_y
+  sta tmp7                 ; y0
+  clc
+  adc #$08
+  sta tmp8                 ; y1
+
+  jsr _BossPickExp2x2Tiles ; sets tmp0..tmp3 based on tmp9
+  jsr _Push2x2_OAM
+
+  ; ============================
+  ; Explosion #2 (right) at boss_x+8, boss_y
+  ; ============================
+  lda boss_x
+  clc
+  adc #$08
+  sta tmp5                 ; x0
+  clc
+  adc #$08
+  sta tmp6                 ; x1 = boss_x+16
+
+  lda boss_y
+  sta tmp7
+  clc
+  adc #$08
+  sta tmp8
+
+  jsr _BossPickExp2x2Tiles
+  jsr _Push2x2_OAM
+
+  ; ============================
+  ; Center spark 1x1 at boss_x+8, boss_y+8
+  ; ============================
+  lda boss_y
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+
+  lda tmp9
+  beq @s0
+  cmp #$01
+  beq @s1
+  lda #TILE_EXP1X1_2
+  bne @spark_tile_ok
+@s0:
+  lda #TILE_EXP1X1_0
+  bne @spark_tile_ok
+@s1:
+  lda #TILE_EXP1X1_1
+@spark_tile_ok:
+  sta OAM_BUF,y
+  iny
+
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+
+  lda boss_x
+  clc
+  adc #$08
+  sta OAM_BUF,y
+  iny
+
+  rts
+
+
+; tmp9 = 0..2
+; out: tmp0..tmp3 = TL,TR,BL,BR tiles for that 2x2 frame
+_BossPickExp2x2Tiles:
+  lda tmp9
+  beq @f0
+  cmp #$01
+  beq @f1
+  lda #TILE_EXP2X2_F2
+  bne @base_ok
+@f0:
+  lda #TILE_EXP2X2_F0
+  bne @base_ok
+@f1:
+  lda #TILE_EXP2X2_F1
+@base_ok:
+  sta tmp0
+  clc
+  adc #$01
+  sta tmp1
+  lda tmp0
+  clc
+  adc #$02
+  sta tmp2
+  lda tmp0
+  clc
+  adc #$03
+  sta tmp3
+  rts
+
+
+; Writes a 2x2 metasprite using:
+; tmp0..tmp3 = TL TR BL BR tiles
+; tmp4 = attr
+; tmp5/tmp6 = x0/x1
+; tmp7/tmp8 = y0/y1
+; Y = OAM cursor
+_Push2x2_OAM:
+  ; TL
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp0
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  ; TR
+  lda tmp7
+  sta OAM_BUF,y
+  iny
+  lda tmp1
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp6
+  sta OAM_BUF,y
+  iny
+
+  ; BL
+  lda tmp8
+  sta OAM_BUF,y
+  iny
+  lda tmp2
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp5
+  sta OAM_BUF,y
+  iny
+
+  ; BR
+  lda tmp8
+  sta OAM_BUF,y
+  iny
+  lda tmp3
+  sta OAM_BUF,y
+  iny
+  lda tmp4
+  sta OAM_BUF,y
+  iny
+  lda tmp6
+  sta OAM_BUF,y
+  iny
+
+  rts
+
+; ------------------------------------------------------------
 ; DrawBossBullets
 ; - emits 1 sprite per live boss bullet
 ; - expects: Y = OAM write cursor
@@ -1339,6 +1547,7 @@ DrawBossBullets:
   bne @loop
 @done:
   rts
+
 
 
 ; ------------------------------------------------------------
@@ -1388,6 +1597,8 @@ DrawBossBullets_Fixed:
   bne @loop
 @done:
   rts
+
+
 
 
 ;DrawTutorialBG:

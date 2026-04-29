@@ -411,7 +411,9 @@ CollidePlayerCatch:
   ldx #$00
 @loop:
   cpx #CATCH_MAX
-  bcs @done
+  bcc :+
+    jmp @done
+  :
 
   lda catch_alive,x
   beq @next
@@ -443,6 +445,21 @@ CollidePlayerCatch:
   ; ---- COLLISION! ----
   lda #$00
   sta catch_alive,x
+
+     lda level_idx
+  cmp #LEVEL_FINAL_IDX
+  bne @normal_core_pickup
+
+    jsr famistudio_music_pause
+
+    lda #STATE_ENDING
+    sta game_state
+
+    lda #$00
+    sta ending_built
+    rts
+
+@normal_core_pickup:
 
   ; cache kind (tile)
   lda catch_tile,x
@@ -490,7 +507,9 @@ CollidePlayerCatch:
 
 @next:
   inx
-  bne @loop
+  beq :+
+    jmp @loop
+  :
 
 @done:
   rts
@@ -520,7 +539,9 @@ CollideBulletsBoss:
   ldx #$00
 @bul_loop:
   cpx #BULLET_MAX
-  bcs @done
+  bcc :+
+    jmp @done
+  :
 
   lda bul_alive,x
   beq @next_b
@@ -581,26 +602,29 @@ CollideBulletsBoss:
   lda #FLAG_CLEAR
   sta boss_alive
 
-  lda #$01
-  sta boss_hp_clear_pending
-
-
-  ;jsr PlaySfxBossKill         ;
-  jsr AddBossScore            ; <-- ADD THIS
-
+  ; stop actors now so the screen is “clean” for the show
   jsr ClearBossBullets
   jsr ClearPlayerBullets
-  jsr ClearActors             ; optional but recommended
+  jsr ClearEnemies
+  jsr ClearCatch
 
-  jsr BossBar_QueueClear
+  ; start outro
+  lda #$00
+  sta boss_defeat_built
 
-  jsr NextLevel
+  lda #$40              ; ~64 frames (about 1 second at 60fps)
+  sta boss_defeat_timer
+
+  lda #STATE_BOSS_DEFEATED
+  sta game_state
   rts
 
 
 @next_b:
   inx
-  bne @bul_loop
+  beq :+
+    jmp @bul_loop
+  :
 
 @done:
   rts

@@ -46,8 +46,13 @@ STATE_TITLE     = $04
 STATE_PAUSE     = $05   ; 
 STATE_TUTORIAL  = $06   ; 
 STATE_INTRO     = $07
-
 STATE_BOSS_INTRO = $08
+STATE_BOSS_DEFEATED = $09   ; pick next free id
+
+STATE_ENDING      = $0A
+STATE_COUNT       = $0B   ; total states (0–10)
+
+LEVEL_FINAL_IDX   = $0C   ; level 13 (0-based)
 ; ============================================================
 ; TEXTQ (Reusable text queue)
 ; ============================================================
@@ -288,4 +293,10 @@ BOSS1_LO = <(BOSS_ADDR1)
 BOSS2_HI = >(BOSS_ADDR2)
 BOSS2_LO = <(BOSS_ADDR2)
 
+BOSS_DEFEAT_ROW = 14
+BOSS_DEFEAT_LEN = 15                 ; "THREAT DEFEATED" = 15
+BOSS_DEFEAT_COL = (32 - BOSS_DEFEAT_LEN) / 2   ; 8
 
+BOSS_DEFEAT_ADDR = $2000 + (BOSS_DEFEAT_ROW*32) + BOSS_DEFEAT_COL
+BOSS_DEFEAT_HI = >(BOSS_DEFEAT_ADDR)
+BOSS_DEFEAT_LO = <(BOSS_DEFEAT_ADDR)

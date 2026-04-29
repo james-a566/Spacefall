@@ -5,7 +5,7 @@
 ; returns: C=1 spawned, C=0 skipped
 ; ------------------------------------------------------------
 SpawnCatch:
-  lda catch_count
+  jsr CountActiveCatch
   cmp level_catch_cap
   bcc @can_spawn
     clc
@@ -25,7 +25,6 @@ SpawnCatch:
 @use:
   lda #$01
   sta catch_alive,x
-  inc catch_count
 
   lda #CATCH_SPAWN_Y
   sta catch_y,x
@@ -264,4 +263,54 @@ CollideBulletsCatch:
   bne @bul_loop
 
 @done:
+  rts
+
+UpdateFinalCatch:
+  lda catch_alive
+  beq @done
+
+  lda catch_y
+  clc
+  adc #CATCH_SPD
+  sta catch_y
+
+  cmp #CATCH_KILL_Y
+  bcc @pulse
+
+  ; if missed, respawn
+  lda #CATCH_SPAWN_Y
+  sta catch_y
+  lda #$78
+  sta catch_x
+
+@pulse:
+  lda frame_lo
+  and #$10
+  beq :+
+    lda #CATCH_ATTR
+    sta catch_attr
+    jmp @done
+:
+  lda #$02
+  sta catch_attr
+
+@done:
+  rts
+
+  SpawnFinalCore:
+  lda #$01
+  sta catch_alive
+
+  lda #$78
+  sta catch_x
+
+  lda #CATCH_SPAWN_Y
+  sta catch_y
+
+  lda #TILE_CATCH_CORE_FINAL
+  sta catch_tile
+
+  lda #CATCH_ATTR
+  sta catch_attr
+
   rts

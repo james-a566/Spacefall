@@ -179,8 +179,37 @@ Str_BossLine2:
   .byte TILE_T, TILE_H, TILE_R, TILE_E, TILE_A, TILE_T
   .byte $00
 
+Str_ThreatDefeated:
+  .byte TILE_T, TILE_H, TILE_R, TILE_E, TILE_A, TILE_T
+  .byte TILE_SPACE
+  .byte TILE_D, TILE_E, TILE_F, TILE_E, TILE_A, TILE_T, TILE_E, TILE_D
+  .byte $00
 
 
+Str_Ending1:
+  .byte TILE_F,TILE_I,TILE_N,TILE_A,TILE_L,TILE_SPACE
+  .byte TILE_C,TILE_O,TILE_R,TILE_E,$00
+
+Str_Ending2:
+  .byte TILE_R,TILE_E,TILE_C,TILE_O,TILE_V,TILE_E,TILE_R,TILE_E,TILE_D,$00
+
+Str_Ending3:
+  .byte TILE_T,TILE_H,TILE_E,TILE_SPACE
+  .byte TILE_S,TILE_T,TILE_A,TILE_R,TILE_F,TILE_A,TILE_L,TILE_L
+  .byte TILE_SPACE
+  .byte TILE_E,TILE_N,TILE_D,TILE_S,$00
+
+TextPage_Ending1:
+  TEXTPAGE_LINE $21,$8B, Str_Ending1
+  .byte $00
+
+TextPage_Ending2:
+  TEXTPAGE_LINE $21,$EB, Str_Ending2
+  .byte $00
+
+TextPage_Ending3:
+  TEXTPAGE_LINE $22,$48, Str_Ending3
+  .byte $00
 ; ----------------------------
 ; Sound Data
 ;-----------------------------

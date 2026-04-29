@@ -66,6 +66,7 @@ boss_hp_clear_pending:.res 1
 draw_test_active:     .res 1
 draw_test_done:       .res 1
 
+ending_built: .res 1
 ; ---- Scratch ----
 tmp:  .res 1
 tmp0: .res 1
@@ -131,3 +132,9 @@ bul_count: .res 1
 
 boss_intro_blink: .res 1  ; 0/1 (put in your vars area)
 boss_intro_lastphase: .res 1
+
+boss_defeat_built:  .res 1
+boss_defeat_timer:  .res 1
+
+ending_step:  .res 1
+ending_timer: .res 1

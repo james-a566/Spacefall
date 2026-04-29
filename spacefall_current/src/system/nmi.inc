@@ -13,7 +13,6 @@ NMI:
   bne :+
     inc frame_hi
 :
-  
 
   ; ---- OAM DMA ----
   lda #$00
@@ -21,6 +20,7 @@ NMI:
   lda #>OAM_BUF
   sta OAMDMA
 
+  ; ---- VRAM updates ----
   jsr TextQ_NMI_Flush
 
   ; ---- HUD ----
@@ -32,9 +32,17 @@ NMI:
   cmp #STATE_PAUSE
   beq @do_hud
   jmp @skip_hud
+
 @do_hud:
   jsr HUD_NMI_Update
+
 @skip_hud:
+
+  ; ---- Pause overlay update ----
+  lda pause_dirty
+  beq :+
+    jsr Pause_NMI_Update
+:
 
   ; ---- Flash / grayscale ----
   lda #PPUMASK_BG_SPR
@@ -48,37 +56,32 @@ NMI:
 
   lda #PPUMASK_BG_SPR
   ora #%00000001
+
 @mask_ready:
   sta PPUMASK
 
-  ; ---- Pause overlay update (only if needed) ----
-  lda pause_dirty
-  beq :+
-    jsr Pause_NMI_Update
-:
+  ; ---- hard reset scroll every frame ----
+  lda PPUSTATUS
+  lda #$00
+  sta PPUSCROLL
+  sta PPUSCROLL
 
-pla
-tay
-pla
-tax
-pla
+  lda ppuctrl_shadow
+  and #%11111100
+  sta ppuctrl_shadow
+  sta PPUCTRL
 
-; ---- hard reset scroll every frame ----
-lda PPUSTATUS
-lda #$00
-sta PPUSCROLL
-sta PPUSCROLL
+  lda #$01
+  sta nmi_ready
 
-lda ppuctrl_shadow
-and #%11111100
-sta ppuctrl_shadow
-sta PPUCTRL
+  ; ---- RESTORE REGISTERS LAST ----
+  pla
+  tay
+  pla
+  tax
+  pla
 
-
-lda #$01
-sta nmi_ready
-
-rti
+  rti
 
 IRQ:
   rti
