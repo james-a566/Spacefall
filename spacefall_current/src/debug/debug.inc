@@ -4,8 +4,8 @@
 ; ------------------------------------------------------------
 ; Debug
 ; ------------------------------------------------------------
-DEBUG_BOSS_SKIP = 1     ; set to 0 to compile out boss-skip hotkey
-DEBUG_SPAWN     = 1
+DEBUG_BOSS_SKIP = 0     ; set to 0 to compile out boss-skip hotkey
+DEBUG_SPAWN     = 0
 
 ; debug_mode: 0=normal, 1=A, 2=B, 3=C, 4=D, 5=E
 
