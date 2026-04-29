@@ -255,7 +255,8 @@ HUD_NMI_Update:
   cmp tmp1              ; lives >= (X+1) ?
   bcc @blank
 
-  lda #TILE_HEART_FULL
+  ;lda #TILE_HEART_FULL
+  lda #TILE_BOSSBAR_FULL 
   bne @write
 
 @blank:
@@ -269,8 +270,8 @@ HUD_NMI_Update:
   cpx #HUD_MAX_LIVES
   beq @heart_loop       ; last one: no trailing space
 
-  lda #$00
-  sta PPUDATA
+  ;lda #$00
+  ;sta PPUDATA
   jmp @heart_loop
 
 @hearts_done:

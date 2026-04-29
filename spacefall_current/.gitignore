@@ -1,0 +1,13 @@
+# macOS junk
+.DS_Store
+*/.DS_Store
+
+# build artifacts
+build/*.o
+build/*.map
+build/*.dbg
+build/*.lst
+
+# optional: ROM output
+# uncomment if you DON'T want to commit builds
+# build/*.nes

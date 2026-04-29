@@ -56,6 +56,13 @@ State_Play:
     jmp @play_render_only
 :
 
+; ------------------------------------------------------------
+; Final Core sequence
+; Level 13 is not a normal gameplay level.
+; It skips enemy spawning, normal catch spawning, and boss timer.
+; The player must catch the final core to enter STATE_ENDING.
+; ------------------------------------------------------------
+
   ; ---- FINAL LEVEL: only player + final core ----
     lda level_idx
   cmp #LEVEL_FINAL_IDX

@@ -75,6 +75,9 @@ NMI:
   sta nmi_ready
 
   ; ---- RESTORE REGISTERS LAST ----
+
+  ; Restore registers LAST.
+  ; Do not add logic after this point unless it preserves A/X/Y itself.
   pla
   tay
   pla

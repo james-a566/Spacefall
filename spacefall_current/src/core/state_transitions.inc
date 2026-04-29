@@ -87,25 +87,29 @@ sta debug_force_type
   sta boss_hp
   sta boss_hp_max
 
+; Levels are zero-based:
+; $00 = Level 1
+; $0B = Level 12
+; $0C = Final Core ending sequence
+; LEVEL_FINAL_IDX = $0C
 
+  ;lda #$00       ; starting level
+  ;sta level_idx
+  ;jsr LoadLevelParams
 
-  lda #$00       ; starting level
-  sta level_idx
-  jsr LoadLevelParams
+  ;jsr ReseedCatchSpawn
 
-  jsr ReseedCatchSpawn
+ ; jsr ClearActors          
 
-  jsr ClearActors          
+  ;lda #60
+  ;sta level_banner
+  ;lda #STATE_BANNER
+  ;sta game_state
 
-  lda #60
-  sta level_banner
-  lda #STATE_BANNER
-  sta game_state
-
-  ; lda #LEVEL_FINAL_IDX
-  ; sta level_idx
-  ; jsr EnterFinalLevel
-  ; rts
+   lda #LEVEL_FINAL_IDX
+   sta level_idx
+   jsr EnterFinalLevel
+   rts
 
   ; use level params for spawns/timing
   lda level_spawn_cd
