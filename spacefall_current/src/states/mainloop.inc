@@ -40,6 +40,16 @@ MainLoop:
   sta ptr0+1
   jmp (ptr0)
 
+
+### MainLoop jump table
+
+```asm
+; ------------------------------------------------------------
+; State dispatch
+; game_state is an index into StateJumpTable.
+; IMPORTANT: If adding a new state, also update STATE_COUNT.
+; ------------------------------------------------------------
+
 StateJumpTable:
   .word State_Banner       ; $00
   .word State_Play         ; $01

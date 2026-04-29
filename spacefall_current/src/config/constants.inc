@@ -52,6 +52,10 @@ STATE_BOSS_DEFEATED = $09   ; pick next free id
 STATE_ENDING      = $0A
 STATE_COUNT       = $0B   ; total states (0–10)
 
+; Levels are zero-based:
+; $00 = Level 1
+; $0B = Level 12
+; $0C = Final Core ending sequence
 LEVEL_FINAL_IDX   = $0C   ; level 13 (0-based)
 ; ============================================================
 ; TEXTQ (Reusable text queue)
