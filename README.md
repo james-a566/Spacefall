@@ -30,13 +30,7 @@ The game includes:
 
 ## Source Layout
 ```
-src/
-  main.s                  Main entry / includes
-  system/                 Reset, NMI, controller, PPU helpers
-  states/                 Title, intro, play, boss, pause, ending
-  gameplay/               Player, bullets, enemies, catches, boss logic
-  data/                   Level parameters, text pages, palettes, CHR refs
-  audio/                  FamiStudio music/SFX data
+
 ```
 
 ## Notes
