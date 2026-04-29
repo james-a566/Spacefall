@@ -20,5 +20,27 @@ The game includes:
 
 ```bash
 ./build.sh
+```
 
-## Controls
+## Controls 
+
+- D-Pad: move
+- A: shoot
+- START: start / pause / advance from ending
+
+## Source Layout
+```
+src/
+  main.s                  Main entry / includes
+  system/                 Reset, NMI, controller, PPU helpers
+  states/                 Title, intro, play, boss, pause, ending
+  gameplay/               Player, bullets, enemies, catches, boss logic
+  data/                   Level parameters, text pages, palettes, CHR refs
+  audio/                  FamiStudio music/SFX data
+```
+
+## Notes
+
+This build targets mapper 0 / NROM-style simplicity unless otherwise changed in the linker/header configuration.
+
+v1.0 is intentionally feature-complete and conservative. New Game+ scaling and additional post-ending features are planned for a future version.
