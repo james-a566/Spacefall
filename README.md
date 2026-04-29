@@ -20,3 +20,5 @@ The game includes:
 
 ```bash
 ./build.sh
+
+## Controls
