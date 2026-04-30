@@ -255,8 +255,8 @@ HUD_NMI_Update:
   cmp tmp1              ; lives >= (X+1) ?
   bcc @blank
 
-  ;lda #TILE_HEART_FULL
-  lda #TILE_BOSSBAR_FULL 
+  lda #TILE_HEART_FULL
+
   bne @write
 
 @blank:
@@ -275,6 +275,24 @@ HUD_NMI_Update:
   jmp @heart_loop
 
 @hearts_done:
+
+  ; ---------- boss bar attributes during boss ----------
+  lda game_state
+  cmp #STATE_BOSS
+  bne :+
+
+  lda PPUSTATUS
+  lda #$23
+  sta PPUADDR
+  lda #$CA
+  sta PPUADDR
+
+  lda #$50       ; try top half first: row 5 of attr block
+  sta PPUDATA
+  sta PPUDATA
+  sta PPUDATA
+  sta PPUDATA
+:
 
 rts
 

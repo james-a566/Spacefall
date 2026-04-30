@@ -7,6 +7,12 @@
 ; ------------------------------------------------------------
 BossSpawn:
 
+lda #$00
+sta bossbar_attrs_set
+
+lda #$00
+sta boss_attrs_tested
+
 lda #$01
 sta bossbar_visible
 sta bossbar_dirty
@@ -1585,4 +1591,25 @@ BossApplyPhaseParams:
   lda BossPhaseSets,y
   sta boss_phase_flags
 
+  rts
+
+
+BossBar_NMI_SetAttrs:
+  lda game_state
+  cmp #STATE_BOSS
+  bne @done
+
+  lda PPUSTATUS
+  lda #$23
+  sta PPUADDR
+  lda #$CA
+  sta PPUADDR
+
+  lda #$05
+  sta PPUDATA
+  sta PPUDATA
+  sta PPUDATA
+  sta PPUDATA
+
+@done:
   rts

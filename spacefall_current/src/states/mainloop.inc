@@ -41,9 +41,8 @@ MainLoop:
   jmp (ptr0)
 
 
-### MainLoop jump table
+; MainLoop jump table
 
-```asm
 ; ------------------------------------------------------------
 ; State dispatch
 ; game_state is an index into StateJumpTable.

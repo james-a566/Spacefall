@@ -1,102 +1,233 @@
 
+---
+
+# `docs/file-map.md`
+
 ```md
 # Starfall Source Map
 
-## Boot / Frame Flow
+This document describes the structure and flow of the Starfall codebase.
 
-`Reset` initializes RAM, PPU, music, and then enters the main loop.
+---
 
-## Main frame flow:
+# 🔁 Frame Flow
+
+Main loop:
 
 ```text
 MainLoop
   WaitFrame
   famistudio_update
   ReadController1
-  state jump table dispatch
-
-NMI handles:
-
-- frame counter
-- OAM DMA
-- text queue flush
-- HUD updates
-- PPUMASK flash/grayscale
-- scroll reset
+  state dispatch (jump table)
 ```
+## NMI Responsibilities
+
+`src/system/nmi.inc`
+
+Runs once per frame:
+
+- Frame counter increment
+- OAM DMA (sprite upload)
+- Text queue flush
+- HUD updates
+- Pause UI updates
+- Screen flash / grayscale effects
+- Scroll reset
+- PPUCTRL restore
+
+Important rule:
+Registers (A/X/Y) are restored last before RTI.
+
+## State System
+
+State dispatch lives in:
+
+`src/states/mainloop.inc`
+
+Jump table:
+
+- STATE_BANNER        $00
+- STATE_PLAY          $01
+- STATE_BOSS          $02
+- STATE_OVER          $03
+- STATE_TITLE         $04
+- STATE_PAUSE         $05
+- STATE_TUTORIAL      $06
+- STATE_INTRO         $07
+- STATE_BOSSINTRO     $08
+- STATE_BOSSDEFEATED  $09
+- STATE_ENDING        $0A
+
 
 ## State Flow
 ```
-STATE_TITLE
+TITLE
   ↓ START
-STATE_INTRO
+INTRO
   ↓
-STATE_TUTORIAL
+TUTORIAL
   ↓
-STATE_BANNER
+BANNER
   ↓
-STATE_PLAY
-  ↓ boss timer
-STATE_BOSS_INTRO
+PLAY
+  ↓ (boss timer)
+BOSS INTRO
   ↓
-STATE_BOSS
-  ↓ boss defeated
-STATE_BOSS_DEFEATED
-  ↓ next level
-STATE_BANNER / STATE_PLAY
-  ↓ after level 12
-STATE_ENDING
+BOSS
+  ↓
+BOSS DEFEATED
+  ↓
+NEXT LEVEL → BANNER → PLAY
+
+(Level 12 complete)
+  ↓
+FINAL CORE (Level 13)
+  ↓
+ENDING
   ↓ START
-STATE_TITLE
+TITLE
 ```
+## Level System
 
-# Important States
+Defined in:
 
-- State_Title: title screen, press start blink
-- State_Intro: multi-page intro text
-- State_Tutorial: tutorial screen
-- State_Banner: level banner transition
-- State_Play: main gameplay loop
-- State_Boss: boss battle
-- State_BossDefeated: boss cleanup / level advance
-- State_Ending: final ending reveal
+`src/data/level_params.inc`
 
-## Level Index Notes
 Levels are zero-based:
-```
-$00 = Level 1
-$0B = Level 12
-$0C = Final Core / Level 13 ending sequence
-```
-Important constants:
+
+- $00 = Level 1
+- $0B = Level 12
+- $0C = Final Core (Level 13)
+
+Key constant:
 ```
 LEVEL_FINAL_IDX = $0C
-STATE_ENDING    = $0A
-STATE_COUNT     = $0B
 ```
+
 ## Final Core Sequence
 
-The final level does not use normal enemy/catch/boss updates.
+Triggered after Level 12.
 
-EnterFinalLevel prepares the final sequence.
+Setup:
 
-State_Play branches early when:
+`EnterFinalLevel (state_transitions.inc)`
+
+Behavior differences:
+
+- Skips:
+    - Enemy updates
+    - Normal catch spawning
+    - Boss timer / PlayUpdate logic
+- Uses:
+    - UpdateFinalCatch
+    - CollidePlayerCatch
+
+Core behavior:
+
+- Falls from top
+- Pulses (palette toggle)
+- Respawns if missed
+- Ends run when caught
+
+## Gameplay Systems
+
+Located in:
+
+`src/game/`
+
+Key files:
+- player.inc — movement, shooting, cooldown
+- bullets (within player) — projectile updates
+- enemies.inc — enemy logic
+- boss.inc — boss patterns + behavior
+- catch.inc — falling core objects
+- collisions.inc — all collision systems
+- lives.inc — damage and life handling
+- score.inc — scoring
+
+## Memory Layout
+`src/memory/`
+- memory_zp.inc — zero-page variables (fast access)
+- memory_bss.inc — general RAM
+
+## Rendering
+### OAM / Sprites
+`src/oam/`
+- buildoam.inc — builds sprite buffer each frame
+### Background / PPU
+`src/ppu/`
+- backgrounds.inc — starfield
+- ppu_helpers.inc — VRAM safe writes
+- nmi_ui.inc — HUD updates in NMI
+
+## Text System
 ```
-lda level_idx
-cmp #LEVEL_FINAL_IDX
+src/ui/textq.inc
+src/data/text_pages.inc
 ```
-The final branch runs:
+Two modes:
 
-- player update
-- bullets update
-- final core spawn/update
-- player/final core collision
+- Manual full-page draw (Text_DrawPage_Manual)
+- Queue-based updates (TextQ_*)
 
-It skips:
+Used for:
 
-- normal catch spawning
-- enemies
-- boss countdown
-- bullet/catch collision
+- Title
+- Intro/tutorial
+- Ending sequence
 
-When the player catches the final core, the game enters STATE_ENDING.
+## Audio
+`src/audio/`
+- famistudio_ca65.s — engine
+- music_all.s — music
+- music_sfx.s — SFX
+
+Update call:
+
+`jsr famistudio_update`
+
+## Core Systems
+` src/coure/`
+- frame.inc — frame sync
+- input.inc — controller reading
+- rng.inc — pseudo-random generator
+- state_transitions.inc — ResetRun, level flow
+
+## Debug
+```
+src/debug/debug.inc
+src/states/debug_hotkeys.inc
+```
+
+Used for:
+
+- spawning tests
+- boss skip/debugging
+
+Disabled in release.
+
+## Build System
+```
+build.sh
+nes.cfg
+```
+- Assembles all .s files
+- Links into final .nes ROM
+
+## Key Gotchas
+- NMI register restore must be last
+- VRAM writes only during VBlank or render-off
+- StateJumpTable requires STATE_COUNT update
+- Final level must skip PlayUpdate
+
+## Summary
+Starfall is structured as:
+```
+Engine (core/system)
+  + Gameplay systems (game/)
+  + State machine (states/)
+  + Rendering (ppu/oam/ui)
+  + Data (levels/text/audio)
+```
+v1.0 represents a complete, stable release build.

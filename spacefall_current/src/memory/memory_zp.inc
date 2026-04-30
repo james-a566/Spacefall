@@ -138,3 +138,7 @@ boss_defeat_timer:  .res 1
 
 ending_step:  .res 1
 ending_timer: .res 1
+
+bossbar_attrs_set: .res 1
+
+boss_attrs_tested: .res 1

@@ -20,7 +20,7 @@ TILE_SOLID_03 = $03
 
 TILE_BOSSBAR_EMPTY = $2E
  
-TILE_BOSSBAR_FULL  = $02
+TILE_BOSSBAR_FULL  = $01
 
 ; ------------------------------------------------------------
 ; BG (0..127) — digits, letters, HUD icons, star tiles
@@ -75,8 +75,14 @@ TILE_TEXT_BLANK = $2E
 TILE_DASH  = $2F   ; '-'
 
 ; ---- HUD hearts (BG) ----
-TILE_HEART_FULL  = $30
-TILE_HEART_EMPTY = TILE_SPACE
+;TILE_HEART_FULL  = $30
+;TILE_HEART_EMPTY = TILE_SPACE
+
+TILE_LIFEBAR_FULL  = TILE_SOLID_02
+TILE_LIFEBAR_EMPTY = TILE_SPACE
+
+TILE_HEART_FULL  = TILE_LIFEBAR_FULL
+TILE_HEART_EMPTY = TILE_LIFEBAR_EMPTY
 
 ;TILE_WARN = $31
 ; ---- BG stars (reserve a block for expansion) ----

@@ -1,126 +1,107 @@
 # Starfall
 
-Starfall is a homebrew NES arcade shooter built in 6502 assembly using ca65/ld65.
+Starfall is a homebrew NES arcade shooter written in 6502 assembly using ca65/ld65.
 
-## Current Release
+## Overview
 
-**Release build:** v1.0  
+Survive escalating waves of enemies, defeat bosses, and recover scattered cores.  
+After 12 levels, a final core appears—catch it to complete the run and trigger the ending.
+
+## Release
+
+**Version:** v1.0  
 **Status:** Complete playable loop
 
-The game includes:
-- title screen
-- intro/tutorial flow
-- 12 level progression
-- boss encounters
-- final core sequence
-- ending screen
-- return to title
+Features:
+- Title, intro, and tutorial flow
+- 12 levels of escalating difficulty
+- Boss encounters
+- Catch/core system
+- Final core ending sequence
+- Ending screen with staged text reveal
+- Pause system
+- HUD (score, lives)
+- Music + sound effects via FamiStudio
+
+---
 
 ## Build
+
+Requires:
+- ca65 / ld65 (cc65 toolchain)
+- Bash (macOS/Linux)
+
+Build the ROM:
 
 ```bash
 ./build.sh
 ```
-
-## Controls 
-
-- D-Pad: move
-- A: shoot
-- START: start / pause / advance from ending
-
-## Source Layout
+Output
 ```
-spacefall_current/
-  build.sh                  Build script
-  nes.cfg                   Linker config
-  readme.md                 Project README
-  music_gameplay.fms        FamiStudio music project
-  spacefall_sfx.fms         FamiStudio SFX project
-
-  build/
-    game.nes                Built ROM output
-    main.o                  Build artifact
-
-  docs/
-    CHANGELOG.md            Release notes / version history
-    file-map.md             Source navigation notes
-
-  src/
-    main.s                  Main source file / include hub
-
-    config/
-      constants.inc         Gameplay/system constants
-      tiles.inc             Tile ID definitions
-
-    core/
-      frame.inc             Frame wait / timing helpers
-      input.inc             Controller reading
-      mem.inc               Memory clearing/helpers
-      rng.inc               Random number routines
-      state_transitions.inc State transition helpers, ResetRun, level flow
-
-    data/
-      level_params.inc      Level parameter tables and final-level setup
-      tables_rodata.inc     Read-only lookup tables
-      text_pages.inc        Text strings and text page definitions
-
-    debug/
-      debug.inc             Debug helpers / debug spawning
-
-    game/
-      actors.inc            Actor clearing/setup helpers
-      boss.inc              Boss logic
-      catch.inc             Catch/core spawning and movement
-      collisions.inc        Player/enemy/bullet/catch collisions
-      enemies.inc           Enemy spawning and updates
-      lives.inc             Lives / damage helpers
-      player.inc            Player movement/shooting
-      score.inc             Score logic
-
-    memory/
-      memory_bss.inc        BSS RAM variables
-      memory_zp.inc         Zero-page variables
-
-    oam/
-      buildoam.inc          Sprite/OAM composition
-      oam.inc               OAM constants/helpers
-
-    ppu/
-      backgrounds.inc       Starfield/background drawing
-      nmi_ui.inc            HUD/pause/text NMI-side updates
-      ppu_helpers.inc       PPU begin/end VRAM helpers
-
-    states/
-      mainloop.inc          Main loop and state jump table
-      states_title_intro.inc Title, intro, tutorial states
-      states_play_boss.inc  Play, boss, boss intro/defeated states
-      states_pause_over.inc Pause, game over, ending states
-      debug_hotkeys.inc     Debug skip/hotkey state helpers
-
-    system/
-      header.inc            iNES header
-      reset.inc             Reset/boot sequence
-      nmi.inc               NMI routine
-      vectors.inc           Interrupt vectors
-      chr.s                 CHR include/binary data
-
-    ui/
-      hud.inc               HUD drawing/update logic
-      textq.inc             Text queue/manual text helpers
-
-    audio/
-      audio.inc             Audio constants/wrappers
-      famistudio_ca65.s     FamiStudio engine
-      music_all.s           Music data
-      music_sfx.s           SFX data
-
-    spacefall.chr           Active CHR graphics
-    spacefall_backup_2026-02-13.chr
-                             Backup CHR graphics
+build/game.nes
 ```
+## Controls
+| Input | Action        |
+| ----- | ------------- |
+| D-Pad | Move          |
+| A     | Shoot         |
+| START | Start / Pause |
+
+## Project Structure
+
+```
+src/
+  main.s                  Entry point / include hub
+
+  config/                 Constants and tile definitions
+  core/                   Frame, input, RNG, transitions
+  data/                   Level tables, text, lookup data
+  game/                   Gameplay systems (player, enemies, boss, catch)
+  memory/                 RAM layout (ZP + BSS)
+  oam/                    Sprite building
+  ppu/                    Backgrounds, VRAM helpers
+  states/                 Game states (title, play, boss, ending)
+  system/                 Reset, NMI, vectors, header
+  ui/                     HUD and text system
+  audio/                  FamiStudio engine + data
+```
+Full breakdown in: docs/file-map.md
+
+## Design Notes
+- Levels are zero-based internally:
+    - $00 = Level 1
+    - $0B = Level 12
+    - $0C = Final core sequence
+- The final level is not a standard level:
+    - No enemies
+    - No boss timer
+    - Single falling core
+    - Player must catch it to finish the run
+
+## Audio
+Audio is powered by FamiStudio:
+
+- music_gameplay.fms
+- spacefall_sfx.fms
+
+Compiled into:
+
+- src/audio/music_all.s
+- src/audio/music_sfx.s
+
+## Debug
+Some debug features exist (spawn/testing), but are disabled in the release build.
+
+## Future Plans
+Planned for future versions:
+
+- New Game+ difficulty scaling
+- Additional polish (visual/audio effects)
+- Potential gameplay extensions
+
+## License
+(TODO)
 
 ## Notes
-
-This build targets mapper 0 / NROM-style simplicity unless otherwise changed in the linker/header configuration.
-
-v1.0 is intentionally feature-complete and conservative. New Game+ scaling and additional post-ending features are planned for a future version.
+This project targets NES hardware behavior.
+Tested in emulator and on real hardware via flash cartridge.

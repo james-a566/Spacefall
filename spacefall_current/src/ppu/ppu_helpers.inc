@@ -209,3 +209,22 @@ InitPalettes_Safe:
   bne @spr
 
   rts
+
+
+
+; Boss bar at NT0 $20A8: row 5, cols 8-23.
+; Attribute bytes: $23CA-$23CD.
+SetBossBarAttrsNT0:
+  lda PPUSTATUS
+  lda #$23
+  sta PPUADDR
+  lda #$CA
+  sta PPUADDR
+
+  ldx #$04
+  lda #$55        ; obvious test: palette 1 for all quadrants
+@loop:
+  sta PPUDATA
+  dex
+  bne @loop
+  rts

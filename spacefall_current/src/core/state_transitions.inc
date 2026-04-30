@@ -93,23 +93,23 @@ sta debug_force_type
 ; $0C = Final Core ending sequence
 ; LEVEL_FINAL_IDX = $0C
 
-  ;lda #$00       ; starting level
-  ;sta level_idx
-  ;jsr LoadLevelParams
+; Normal level start
+  lda #$00       ; starting level
+  sta level_idx
+  jsr LoadLevelParams
+  jsr ReseedCatchSpawn
+  jsr ClearActors          
 
-  ;jsr ReseedCatchSpawn
+  lda #60
+  sta level_banner
+  lda #STATE_BANNER
+  sta game_state
 
- ; jsr ClearActors          
-
-  ;lda #60
-  ;sta level_banner
-  ;lda #STATE_BANNER
-  ;sta game_state
-
-   lda #LEVEL_FINAL_IDX
-   sta level_idx
-   jsr EnterFinalLevel
-   rts
+; start at final level
+;   lda #LEVEL_FINAL_IDX
+;   sta level_idx
+;   jsr EnterFinalLevel
+;   rts
 
   ; use level params for spawns/timing
   lda level_spawn_cd

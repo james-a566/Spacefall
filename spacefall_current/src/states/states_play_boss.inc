@@ -12,6 +12,8 @@ State_Banner:
       jsr ClearNametable0
       jsr DrawStarfieldNT0
       jsr ClearAttributesNT0
+      jsr SetUIAttrsNT0
+      jsr SetBossBarAttrsNT0
     jsr PPU_EndVRAM
 
     lda #$01
@@ -62,7 +64,6 @@ State_Play:
 ; It skips enemy spawning, normal catch spawning, and boss timer.
 ; The player must catch the final core to enter STATE_ENDING.
 ; ------------------------------------------------------------
-
   ; ---- FINAL LEVEL: only player + final core ----
     lda level_idx
   cmp #LEVEL_FINAL_IDX

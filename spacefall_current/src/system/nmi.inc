@@ -14,6 +14,8 @@ NMI:
     inc frame_hi
 :
 
+  jsr BossBar_NMI_SetAttrs
+
   ; ---- OAM DMA ----
   lda #$00
   sta OAMADDR
